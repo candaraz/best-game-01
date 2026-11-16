@@ -4,6 +4,7 @@
 // the main loop can hit-test clicks against exactly what the player saw.
 
 import { FIELD, WEIGHTS, SCORE } from './config.js';
+import { ROOMS } from './levels.js';
 import {
   drawBackdrop,
   drawPip,
@@ -12,7 +13,9 @@ import {
   drawMineFigure,
   drawOrbFigure,
   drawDoorFigure,
+  drawWorld,
 } from './render.js';
+import { runShot } from './shots.js';
 
 function chip(ctx, x, y, text, fill = '#2c3050', fg = '#f2e8d8') {
   ctx.save();
@@ -68,11 +71,11 @@ function panel(ctx, x, y, w, h, alpha = 0.86) {
 export function drawDiorama(ctx, time, juice) {
   drawBackdrop(ctx, 0, time);
   const floorY = 472;
-  ctx.fillStyle = '#2c3050';
+  ctx.fillStyle = '#b98a52';
   ctx.fillRect(0, floorY, FIELD.width, FIELD.height - floorY);
-  ctx.fillStyle = '#4a5180';
+  ctx.fillStyle = '#e0b96a';
   ctx.fillRect(0, floorY, FIELD.width, 4);
-  ctx.strokeStyle = '#1b1f38';
+  ctx.strokeStyle = '#5a4026';
   for (let x = 0; x < FIELD.width; x += 40) {
     ctx.beginPath();
     ctx.moveTo(x, floorY);
@@ -120,24 +123,55 @@ export function drawDiorama(ctx, time, juice) {
   juice.draw(ctx);
 }
 
+/** The title's live mini-board: the cover staging of room 3, rendered by
+ *  the real game code and frozen at the steal. Computed once and cached —
+ *  the staging is deterministic (seed 1), so the title frame replays
+ *  identically. No juice particles: they use Math.random, which the
+ *  staging seed does not cover here. */
+let previewCache = null;
+function getPreview() {
+  if (!previewCache) {
+    const staged = runShot('cover', 1, (w) => {
+      w.drainEvents();
+    });
+    previewCache = staged;
+  }
+  return previewCache;
+}
+
+const ROOM_LINES = [
+  'smash the cracked bridge',
+  'float the golden shaft',
+  'pop both golems',
+  'fizzle every mine',
+  'cross the wind, ride up',
+  'weigh the switch',
+  'smash down, open the gate',
+  'golem, mines, gale, gate',
+  'weigh in, float up, smash down',
+];
+
 export function drawTitle(ctx, opts) {
   const { time, juice, best, totalStars, unlocked, selected, showHelp, mouse } = opts;
   drawDiorama(ctx, time, juice);
   const buttons = [];
-  panel(ctx, 36, 36, 452, 528);
+  panel(ctx, 36, 28, 452, 548);
   ctx.textAlign = 'left';
   ctx.fillStyle = '#ffd76a';
   ctx.font = 'bold 64px system-ui, sans-serif';
-  ctx.fillText('BALLAST', 60, 112);
+  ctx.fillText('BALLAST', 60, 100);
   ctx.fillStyle = '#f2e8d8';
   ctx.font = 'bold 17px system-ui, sans-serif';
-  ctx.fillText('Steal weight. Give it back.', 60, 142);
-  ctx.fillText('Change what you are.', 60, 164);
+  ctx.fillText('Steal weight. Give it back.', 60, 130);
+  ctx.fillText('Change what you are.', 60, 152);
+  // Content inventory: the game sells itself in frame 1 — counts, not
+  // adjectives. Totals are the real ones from the nine room grids.
   ctx.fillStyle = '#aeb4d4';
   ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('9 vault rooms · 18 orbs · 27 stars · 4 weights, one gauge.', 60, 190);
+  ctx.fillText('9 ROOMS · 18 ORBS · 27 STARS · 4 WEIGHTS', 60, 178);
+  ctx.fillText('5 GOLEMS · 6 MINES · 5 BOULDERS · 17 CRATES', 60, 196);
   ctx.fillStyle = '#f2e8d8';
-  ctx.fillText('WIN: reach the door.  LOSE: all 3 hearts in a room.', 60, 208);
+  ctx.fillText('WIN: reach the door.  LOSE: all 3 hearts in a room.', 60, 214);
 
   // The four states, as a strip the eye can read in one glance.
   let sx = 60;
@@ -145,14 +179,14 @@ export function drawTitle(ctx, opts) {
     const st = WEIGHTS[g];
     ctx.fillStyle = st.colour;
     ctx.beginPath();
-    ctx.roundRect(sx, 226, 92, 46, 6);
+    ctx.roundRect(sx, 232, 92, 46, 6);
     ctx.fill();
     ctx.fillStyle = '#1b1f38';
     ctx.font = 'bold 13px system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`${g} · ${st.name}`, sx + 46, 244);
+    ctx.fillText(`${g} · ${st.name}`, sx + 46, 250);
     ctx.font = '10px system-ui, sans-serif';
-    ctx.fillText(g === 0 ? 'FLOATS' : g === 1 ? 'BALANCED' : g === 2 ? 'PUSHES' : 'SMASHES', sx + 46, 260);
+    ctx.fillText(g === 0 ? 'FLOATS' : g === 1 ? 'BALANCED' : g === 2 ? 'PUSHES' : 'SMASHES', sx + 46, 266);
     sx += 100;
   }
   ctx.textAlign = 'left';
@@ -182,10 +216,10 @@ export function drawTitle(ctx, opts) {
   // Room select.
   ctx.fillStyle = '#f2e8d8';
   ctx.font = 'bold 13px system-ui, sans-serif';
-  ctx.fillText('CHOOSE A ROOM', 60, 396);
+  ctx.fillText('CHOOSE A ROOM', 60, 384);
   for (let i = 0; i < 9; i += 1) {
     const bx = 60 + i * 44;
-    const by = 406;
+    const by = 394;
     const locked = i >= unlocked;
     const rect = { x: bx, y: by, w: 36, h: 36 };
     ctx.fillStyle = locked ? '#1b1f38' : i === selected ? '#ffd76a' : '#232844';
@@ -205,23 +239,60 @@ export function drawTitle(ctx, opts) {
     if (!locked) buttons.push({ id: `room-${i}`, ...rect });
   }
 
-  const startRect = { x: 60, y: 462, w: 404, h: 46 };
+  const startRect = { x: 60, y: 446, w: 404, h: 46 };
   button(ctx, startRect, selected === 0 ? 'ENTER THE VAULT' : `START AT ROOM ${selected + 1}`, mouse, true);
   buttons.push({ id: 'start', ...startRect });
-  const helpRect = { x: 60, y: 516, w: 196, h: 32 };
+  const helpRect = { x: 60, y: 500, w: 196, h: 32 };
   button(ctx, helpRect, showHelp ? 'HIDE THE CODEX' : 'HOW TO PLAY', mouse, false);
   buttons.push({ id: 'help', ...helpRect });
-  const muteRect = { x: 268, y: 516, w: 196, h: 32 };
+  const muteRect = { x: 268, y: 500, w: 196, h: 32 };
   button(ctx, muteRect, opts.muted ? 'SOUND: OFF' : 'SOUND: ON', mouse, false);
   buttons.push({ id: 'mute', ...muteRect });
 
   if (showHelp) {
-    panel(ctx, 512, 36, 412, 528);
+    panel(ctx, 512, 28, 412, 548);
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffd76a';
     ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillText('THE WEIGHT CODEX', 536, 72);
-    drawCodex(ctx, 536, 88, 364);
+    ctx.fillText('THE WEIGHT CODEX', 536, 64);
+    drawCodex(ctx, 536, 80, 364);
+  } else {
+    // Right column: a live gameplay vignette above the room list, so the
+    // title screen shows the game being played, not just its menu.
+    panel(ctx, 512, 28, 412, 300);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffd76a';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.fillText('LIVE FROM ROOM 3 — HOLLOW PATROL', 536, 56);
+    const preview = getPreview();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(524, 64, 388, 242);
+    ctx.clip();
+    ctx.translate(524, 64);
+    const scale = 388 / FIELD.width;
+    ctx.scale(scale, scale);
+    drawWorld(ctx, preview.world, preview.juice, preview.time, preview.world.targets());
+    ctx.restore();
+    ctx.fillStyle = '#aeb4d4';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillText('Pip just popped a golem — steal, then give it back.', 536, 322);
+
+    panel(ctx, 512, 340, 412, 236);
+    ctx.fillStyle = '#ffd76a';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.fillText('THE NINE ROOMS', 536, 368);
+    ctx.font = '12px system-ui, sans-serif';
+    for (let i = 0; i < 9; i += 1) {
+      const y = 390 + i * 17;
+      ctx.fillStyle = '#ffd76a';
+      ctx.fillText(`${i + 1}. ${ROOMS[i].name.toUpperCase()}`, 536, y);
+      ctx.fillStyle = '#aeb4d4';
+      ctx.fillText(`— ${ROOM_LINES[i]}`, 536 + 168, y);
+    }
+    ctx.fillStyle = '#f2e8d8';
+    ctx.font = 'bold 12px system-ui, sans-serif';
+    ctx.fillText('E STEAL  ·  Q GIVE — ONE GAUGE, FOUR BODIES.', 536, 556);
   }
   return { buttons };
 }

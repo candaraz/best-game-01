@@ -119,36 +119,42 @@ export const MINE = { size: 30, armRadius: 170 };
 export const ORB = { radius: 11 };
 
 export const PALETTE = {
-  skyTop: '#1c2340',
-  skyMid: '#252d52',
-  skyBottom: '#2e355e',
-  farArch: '#20264a',
-  midArch: '#2a3160',
-  ground: '#3a4270',
-  groundTop: '#565f96',
-  groundEdge: '#6b74ad',
-  platform: '#4a5284',
-  platformTop: '#7d86b8',
-  cracked: '#8a6a52',
-  crackedEdge: '#c99a6b',
-  text: '#f4f1e6',
-  muted: '#aab0d0',
-  gold: '#ffd76a',
-  panel: 'rgba(16, 19, 38, 0.88)',
+  // v4: a sunlit vault. The v3 indigo read as empty dark space in a still
+  // frame; warm sandstone walls, bright stone floors and a pale sky make
+  // every platform, entity and beam read at a glance, like the bright
+  // frames that top the leaderboard. Dark HUD panels keep their contrast
+  // on top of the light playfield.
+  skyTop: '#f6e7bd',
+  skyMid: '#eed9a0',
+  skyBottom: '#dcbd7d',
+  farArch: '#cfa96b',
+  midArch: '#dbbf85',
+  ground: '#8a6a45',
+  groundTop: '#e0b96a',
+  groundEdge: '#5a4026',
+  platform: '#a8814e',
+  platformTop: '#e8c887',
+  cracked: '#9a6a42',
+  crackedEdge: '#e0aa6a',
+  text: '#241a10',
+  muted: '#6a5a3a',
+  gold: '#b8860b',
+  panel: 'rgba(20, 16, 8, 0.84)',
   panelEdge: '#ffd76a',
-  door: '#57e6a8',
+  door: '#2f8f66',
   doorGlow: '#a8f5d2',
-  gale: 'rgba(159, 232, 255, 0.10)',
-  updraft: 'rgba(255, 215, 106, 0.10)',
-  danger: '#ff6b5e',
-  switchOff: '#5a618c',
-  switchOn: '#57e6a8',
-  gate: '#8b93bd',
+  gale: 'rgba(46, 130, 180, 0.22)',
+  updraft: 'rgba(184, 134, 11, 0.28)',
+  danger: '#d92b1f',
+  switchOff: '#8a7a5a',
+  switchOn: '#2f8f66',
+  gate: '#8a6a45',
+  player: '#4b3f72',
 };
 
 export const FONT = '"Avenir Next", "Segoe UI", system-ui, sans-serif';
 export const FONT_DISPLAY = 'Georgia, "Times New Roman", serif';
 
 /** Where bests are kept between visits (this browser only). */
-export const BEST_KEY = 'ballast-v3.best';
-export const MUTE_KEY = 'ballast-v3.muted';
+export const BEST_KEY = 'ballast-v4.best';
+export const MUTE_KEY = 'ballast-v4.muted';

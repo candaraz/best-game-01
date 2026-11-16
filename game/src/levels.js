@@ -6,6 +6,9 @@
 // zones are explicit: the door is drawn from its base point, zones are rects.
 // Every room holds exactly 2 orbs. Par times were set from measured playthroughs
 // with a generous margin, and every room is script-solved in the playtest.
+// v4: one extra boulder each in rooms 2, 3 and 7, placed on floor the
+// scripted solves never need to cross unjumped and clear of every give/steal
+// target the solves rely on — more weight on screen, same solutions.
 
 export const ROOMS = [
   {
@@ -53,7 +56,7 @@ export const ROOMS = [
       '....==............#.....',
       '..................#.....',
       '..................#.....',
-      '.P.c..............#.....',
+      '.P.c.............B#.....',
       '########################',
       '########################',
     ],
@@ -78,7 +81,7 @@ export const ROOMS = [
       '........................',
       '........o......o........',
       '.......===....===.......',
-      '.P.....G......G.........',
+      '.P.....G......G.....B...',
       '########################',
       '########################',
     ],
@@ -181,7 +184,7 @@ export const ROOMS = [
       '.......####.......|.....',
       '..................|.....',
       '..................|.....',
-      '......c...S.XXXG..|..o..',
+      '......c...S.XXXG..|.Bo..',
       '########################',
       '########################',
     ],

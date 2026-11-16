@@ -92,7 +92,16 @@ export function drawHud(ctx, view) {
   }
   ctx.fillStyle = '#aeb4d4';
   ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText(w.verb, gx + 124, gy + 45);
+  // The verb shares its row with the gauge bars: truncate with an ellipsis
+  // rather than letting it run under the roster panel.
+  let verb = w.verb;
+  const verbMax = gx + 300 - 8 - (gx + 124);
+  while (verb.length > 1 && ctx.measureText(verb).width > verbMax) {
+    verb = verb.replace(/…$/, '');
+    const cut = verb.lastIndexOf(' ');
+    verb = (cut > 0 ? verb.slice(0, cut) : verb.slice(0, -1)) + '…';
+  }
+  ctx.fillText(verb, gx + 124, gy + 45);
   ctx.fillStyle = '#f2e8d8';
   ctx.font = 'bold 11px system-ui, sans-serif';
   ctx.fillText('E steal', gx + 14, gy + 66);
@@ -145,17 +154,51 @@ export function drawHud(ctx, view) {
     ctx.textAlign = 'left';
   }
 
+  // Bottom-centre: the room roster — what is still in this room, at a
+  // glance, like the top entries' INCOMING lists: golems left, mines armed,
+  // orbs left, weight still held by objects, and whether the gate stands
+  // open. The four corners keep their jobs; this strip shows the systems.
+  const rx = 324;
+  const ry = FIELD.height - 92;
+  panel(ctx, rx, ry, 312, 80);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText('IN THIS ROOM', rx + 14, ry + 20);
+  const golemsLeft = state.golems.filter((g) => g.alive).length;
+  const minesArmed = state.mines.filter((m) => m.armed).length;
+  const weightHere =
+    state.crates.reduce((s, c) => s + c.weight, 0) +
+    state.boulders.reduce((s, b) => s + b.weight, 0) +
+    state.golems.reduce((s, g) => s + (g.alive ? g.weight : 0), 0);
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  ctx.fillText(
+    `GOLEMS ${golemsLeft}  ·  MINES ${minesArmed}  ·  ORBS ◆ ${state.orbsTaken}/2`,
+    rx + 14,
+    ry + 42,
+  );
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  const gateLine =
+    state.switches.length > 0
+      ? state.gateOpen > 0.6
+        ? 'GATE OPEN — GO'
+        : 'GATE SHUT — FEED THE SWITCH'
+      : 'DOOR OPEN — REACH IT';
+  ctx.fillText(`WEIGHT HERE ${weightHere}   ·   ${gateLine}`, rx + 14, ry + 66);
+
   // Combo callout in the centre-top when a chain is running.
   if (state.combo >= 2 && state.comboTimer > 0) {
     const frac = state.comboTimer / SCORE.comboWindow;
     ctx.save();
     ctx.textAlign = 'center';
     ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillStyle = '#ffd76a';
+    ctx.fillStyle = '#8a5f00';
     ctx.fillText(`COMBO ×${state.combo}`, FIELD.width / 2, 34);
-    ctx.fillStyle = '#2c3050';
+    ctx.fillStyle = '#b98a52';
     ctx.fillRect(FIELD.width / 2 - 50, 42, 100, 5);
-    ctx.fillStyle = '#ffd76a';
+    ctx.fillStyle = '#8a5f00';
     ctx.fillRect(FIELD.width / 2 - 50, 42, 100 * frac, 5);
     ctx.restore();
   }
@@ -166,9 +209,9 @@ export function drawHud(ctx, view) {
     ctx.save();
     ctx.globalAlpha = Math.min(1, (6 - state.time) / 1.5);
     ctx.textAlign = 'center';
-    ctx.font = '13px system-ui, sans-serif';
-    ctx.fillStyle = '#f2e8d8';
-    ctx.shadowColor = '#000';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.fillStyle = '#2a1f10';
+    ctx.shadowColor = '#fff8e0';
     ctx.shadowBlur = 6;
     ctx.fillText(state.def.hint, FIELD.width / 2, 96);
     ctx.restore();
