@@ -1,173 +1,488 @@
-// Full screens: the title card, the room intro card, the pause overlay,
-// the room-complete stars and the all-clear finale. Each draws over a
-// dimmed world; the title draws its own animated night scene.
+// The screens around the game: the title with its live diorama, the pause
+// menu with the weight codex, the room-clear dashboard, the victory screen
+// and the retry prompt. Each draw function returns the buttons it painted, so
+// the main loop can hit-test clicks against exactly what the player saw.
 
-import { WIDTH, HEIGHT, GAUGE } from './config.js';
-import { LEVELS } from './levels.js';
-import { getBests, totalStars } from './store.js';
+import { FIELD, WEIGHTS, SCORE } from './config.js';
+import {
+  drawBackdrop,
+  drawPip,
+  drawCrateFigure,
+  drawGolemFigure,
+  drawMineFigure,
+  drawOrbFigure,
+  drawDoorFigure,
+} from './render.js';
 
-function dim(ctx, alpha) {
-  ctx.fillStyle = `rgba(11, 14, 29, ${alpha})`;
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
-}
-
-function panel(ctx, x, y, w, h, alpha = 0.88) {
-  ctx.fillStyle = `rgba(20, 23, 49, ${alpha})`;
+function chip(ctx, x, y, text, fill = '#2c3050', fg = '#f2e8d8') {
+  ctx.save();
+  ctx.font = 'bold 12px system-ui, sans-serif';
+  const w = ctx.measureText(text).width + 18;
+  ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.roundRect(x, y, w, h, 14);
+  ctx.roundRect(x, y, w, 22, 5);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255, 215, 94, 0.5)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(217,180,91,0.5)';
+  ctx.lineWidth = 1;
   ctx.stroke();
-}
-
-function centreText(ctx, text, y, font, color) {
-  ctx.font = font;
+  ctx.fillStyle = fg;
   ctx.textAlign = 'center';
-  ctx.fillStyle = color;
-  ctx.fillText(text, WIDTH / 2, y);
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + 12);
+  ctx.restore();
+  return w;
 }
 
-export function drawTitle(ctx, time) {
-  // Animated night backdrop: gradient, moon, drifting stars, ridge.
-  const grad = ctx.createLinearGradient(0, 0, 0, HEIGHT);
-  grad.addColorStop(0, '#0b0e1d');
-  grad.addColorStop(0.6, '#191d3a');
-  grad.addColorStop(1, '#2a2450');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
-  for (let i = 0; i < 90; i++) {
-    const x = (i * 173 + 40) % WIDTH;
-    const y = (i * 89 + 20) % 360;
-    ctx.globalAlpha = 0.3 + Math.sin(time * 1.2 + i) * 0.25;
-    ctx.fillStyle = '#e8ecff';
-    ctx.fillRect(x, y, 2, 2);
-  }
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = '#f4f1de';
+function button(ctx, rect, label, mouse, primary = false) {
+  const hover =
+    mouse && mouse.x >= rect.x && mouse.x <= rect.x + rect.w && mouse.y >= rect.y && mouse.y <= rect.y + rect.h;
+  ctx.save();
+  ctx.fillStyle = primary ? (hover ? '#ffd76a' : '#d9b45b') : hover ? '#3a4170' : '#232844';
   ctx.beginPath();
-  ctx.arc(786, 108, 52, 0, Math.PI * 2);
+  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 8);
   ctx.fill();
-  ctx.fillStyle = '#d9d4bd';
-  ctx.beginPath();
-  ctx.arc(770, 98, 10, 0, Math.PI * 2);
-  ctx.arc(800, 124, 7, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#141731';
-  ctx.beginPath();
-  ctx.moveTo(0, HEIGHT);
-  ctx.lineTo(0, 470);
-  ctx.quadraticCurveTo(240, 420, 480, 470);
-  ctx.quadraticCurveTo(720, 520, WIDTH, 460);
-  ctx.lineTo(WIDTH, HEIGHT);
-  ctx.closePath();
-  ctx.fill();
-
-  // A floating crate and a heavy anchor stone tell the mechanic at a glance.
-  const floatY = Math.sin(time * 1.6) * 6;
-  ctx.fillStyle = '#a9804f';
-  ctx.fillRect(150, 300 + floatY, 40, 40);
-  ctx.strokeStyle = '#6d5433';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(150, 300 + floatY, 40, 40);
-  ctx.fillStyle = 'rgba(143, 216, 255, 0.3)';
-  ctx.fillRect(146, 296 + floatY, 48, 48);
-  ctx.fillStyle = '#7d86a8';
-  ctx.beginPath();
-  ctx.arc(790, 520, 26, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#565e7d';
-  ctx.beginPath();
-  ctx.arc(790, 520, 26, 0, Math.PI * 2);
+  ctx.strokeStyle = primary ? '#fff3c4' : 'rgba(217,180,91,0.5)';
+  ctx.lineWidth = primary ? 2 : 1;
   ctx.stroke();
+  ctx.fillStyle = primary ? '#1b1f38' : '#f2e8d8';
+  ctx.font = `bold ${primary ? 16 : 14}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+  ctx.restore();
+  return hover;
+}
 
-  centreText(ctx, 'B A L L A S T', 158, 'bold 72px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
-  centreText(ctx, 'A Weight-Thief\'s Tale', 196, 'italic 24px Georgia, serif', '#f4f1de');
-  centreText(ctx, 'Steal weight. Give it back. The room remembers every ounce.', 232, '15px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
+function panel(ctx, x, y, w, h, alpha = 0.86) {
+  ctx.fillStyle = `rgba(12, 14, 28, ${alpha})`;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 12);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(217, 180, 91, 0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
 
-  panel(ctx, WIDTH / 2 - 250, 258, 500, 132);
-  centreText(ctx, '← → / A D  move      Space / W  jump', 288, '15px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  centreText(ctx, 'E / left click — STEAL weight from an object', 312, 'bold 15px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
-  centreText(ctx, 'Q / right click — GIVE weight back', 336, 'bold 15px "Trebuchet MS", Verdana, sans-serif', '#7ef0c8');
-  centreText(ctx, 'Light floats · Heavy smashes · R retry · M sound', 362, '14px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-
-  const stars = totalStars();
-  const bests = getBests();
-  if (stars > 0 || bests.furthest > 0) {
-    centreText(ctx, `★ ${stars} / 24 stars      furthest room ${Math.min(bests.furthest + 1, 8)} / 8`, 418, '14px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
+/** The staged vault scene behind the title: Pip cycles gauges and trades
+ *  weight with the crate while a golem patrols and the door glows. */
+export function drawDiorama(ctx, time, juice) {
+  drawBackdrop(ctx, 0, time);
+  const floorY = 472;
+  ctx.fillStyle = '#2c3050';
+  ctx.fillRect(0, floorY, FIELD.width, FIELD.height - floorY);
+  ctx.fillStyle = '#4a5180';
+  ctx.fillRect(0, floorY, FIELD.width, 4);
+  ctx.strokeStyle = '#1b1f38';
+  for (let x = 0; x < FIELD.width; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, floorY);
+    ctx.lineTo(x, FIELD.height);
+    ctx.stroke();
   }
-
-  if (Math.floor(time * 1.6) % 2 === 0) {
-    centreText(ctx, 'PRESS ENTER OR CLICK TO BEGIN', 472, 'bold 20px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  }
-  centreText(ctx, '8 rooms · 3 stars each · no two weights alike', 540, '13px "Trebuchet MS", Verdana, sans-serif', 'rgba(244, 241, 222, 0.55)');
-}
-
-export function drawRoomCard(ctx, index, progress) {
-  dim(ctx, 0.55);
-  const def = LEVELS[index];
-  const slide = Math.min(1, progress * 3);
-  const y = 210 + (1 - slide) * 30;
-  ctx.globalAlpha = slide;
-  panel(ctx, WIDTH / 2 - 280, y, 560, 180);
-  centreText(ctx, `ROOM ${index + 1} OF 8`, y + 40, 'bold 15px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-  centreText(ctx, def.name, y + 82, 'bold 34px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  centreText(ctx, def.hint || '', y + 118, '15px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
-  centreText(ctx, `par ${def.par}s · ${def.orbs} orbs`, y + 148, '13px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-  ctx.globalAlpha = 1;
-}
-
-export function drawPause(ctx) {
-  dim(ctx, 0.6);
-  panel(ctx, WIDTH / 2 - 190, 210, 380, 180);
-  centreText(ctx, 'PAUSED', 262, 'bold 32px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  centreText(ctx, 'Esc / P — resume', 302, '15px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-  centreText(ctx, 'R — retry room', 328, '15px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-  centreText(ctx, 'M — sound on/off', 354, '15px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-}
-
-export function drawRoomComplete(ctx, room, time) {
-  dim(ctx, 0.55);
-  panel(ctx, WIDTH / 2 - 260, 150, 520, 300);
-  centreText(ctx, 'ROOM CLEAR!', 200, 'bold 32px "Trebuchet MS", Verdana, sans-serif', '#7ef0c8');
-  centreText(ctx, room.def.name, 232, '17px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  // Stars pop in one by one.
-  for (let i = 0; i < 3; i++) {
-    const delay = 0.35 + i * 0.3;
-    const shown = time > delay;
-    const pop = shown ? Math.min(1, (time - delay) * 4) : 0;
-    const sx = WIDTH / 2 - 60 + i * 60;
-    const sy = 282;
+  drawDoorFigure(ctx, 878, floorY - 64, 36, 64, time);
+  drawOrbFigure(ctx, 540, 356, time, 0);
+  drawOrbFigure(ctx, 700, 300, time, 1.7);
+  const gauge = Math.floor(time / 2.2) % 4;
+  drawCrateFigure(ctx, 640, floorY - 36, 36, 36, { weight: 3 - gauge, maxWeight: 3, time });
+  drawMineFigure(ctx, 760, floorY - 30, 30, 30, { armed: gauge < 2, time });
+  const golemX = 800 + Math.sin(time * 0.5) * 40;
+  drawGolemFigure(ctx, golemX, floorY - 46, 40, 46, {
+    dir: Math.cos(time * 0.5) > 0 ? 1 : -1,
+    time,
+    alive: true,
+  });
+  drawPip(ctx, 560, floorY, {
+    gauge,
+    facing: 1,
+    squash: 0,
+    stretch: 0,
+    runPhase: 0,
+    airborne: gauge === 0,
+    invuln: 0,
+    time,
+  });
+  // A beam arcs between Pip and the crate on a slow loop.
+  const cycle = time % 4.4;
+  if (cycle < 0.5) {
+    const stealing = Math.floor(time / 4.4) % 2 === 0;
     ctx.save();
-    ctx.translate(sx, sy);
-    ctx.scale(0.4 + pop * 0.6, 0.4 + pop * 0.6);
-    ctx.font = '40px "Trebuchet MS", Verdana, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = shown && i < room.stars ? '#ffd75e' : 'rgba(244, 241, 222, 0.18)';
-    ctx.fillText('★', 0, 0);
+    ctx.globalAlpha = 1 - cycle / 0.5;
+    ctx.strokeStyle = stealing ? '#ffd76a' : '#9fe8ff';
+    ctx.lineWidth = 4;
+    ctx.shadowColor = stealing ? '#ffd76a' : '#9fe8ff';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.moveTo(560, floorY - 30);
+    ctx.quadraticCurveTo(610, floorY - 70, 658, floorY - 22);
+    ctx.stroke();
     ctx.restore();
   }
-  centreText(ctx, `Time ${room.time.toFixed(1)}s (par ${room.def.par}s)`, 330, '14px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-  centreText(ctx, `Orbs ${room.orbsTaken}/${room.orbTotal} · Time bonus +${room.timeBonus || 0} · No-damage +${room.noDamageBonus || 0}`, 356, '14px "Trebuchet MS", Verdana, sans-serif', '#9aa3d0');
-  centreText(ctx, `Score ${room.score}`, 384, 'bold 18px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
-  if (time > 1.1) {
-    centreText(ctx, room.index < 7 ? 'ENTER — next room' : 'ENTER — finale', 420, 'bold 16px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  }
+  juice.draw(ctx);
 }
 
-export function drawAllClear(ctx, totalScore, time) {
-  dim(ctx, 0.7);
-  const bob = Math.sin(time * 2) * 4;
-  centreText(ctx, '✦ THE VAULT OPENS ✦', 150 + bob, 'bold 22px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
-  centreText(ctx, 'ALL EIGHT ROOMS CLEAR', 200, 'bold 36px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  centreText(ctx, 'Pip returns every stolen ounce to the night sky,', 246, '16px Georgia, serif', '#9aa3d0');
-  centreText(ctx, 'and the Hollow Vault drifts gently home.', 270, '16px Georgia, serif', '#9aa3d0');
-  centreText(ctx, `Total stars ★ ${totalStars()} / 24`, 318, 'bold 20px "Trebuchet MS", Verdana, sans-serif', '#ffd75e');
-  centreText(ctx, `Total score ${totalScore}`, 348, '16px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
-  if (Math.floor(time * 1.6) % 2 === 0) {
-    centreText(ctx, 'PRESS ENTER TO PLAY AGAIN', 420, 'bold 18px "Trebuchet MS", Verdana, sans-serif', '#f4f1de');
+export function drawTitle(ctx, opts) {
+  const { time, juice, best, totalStars, unlocked, selected, showHelp, mouse } = opts;
+  drawDiorama(ctx, time, juice);
+  const buttons = [];
+  panel(ctx, 36, 36, 452, 528);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 64px system-ui, sans-serif';
+  ctx.fillText('BALLAST', 60, 112);
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = 'bold 17px system-ui, sans-serif';
+  ctx.fillText('Steal weight. Give it back.', 60, 142);
+  ctx.fillText('Change what you are.', 60, 164);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('9 vault rooms · 18 orbs · 27 stars · 4 weights, one gauge.', 60, 190);
+  ctx.fillStyle = '#f2e8d8';
+  ctx.fillText('WIN: reach the door.  LOSE: all 3 hearts in a room.', 60, 208);
+
+  // The four states, as a strip the eye can read in one glance.
+  let sx = 60;
+  for (let g = 0; g < 4; g += 1) {
+    const st = WEIGHTS[g];
+    ctx.fillStyle = st.colour;
+    ctx.beginPath();
+    ctx.roundRect(sx, 226, 92, 46, 6);
+    ctx.fill();
+    ctx.fillStyle = '#1b1f38';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${g} · ${st.name}`, sx + 46, 244);
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.fillText(g === 0 ? 'FLOATS' : g === 1 ? 'BALANCED' : g === 2 ? 'PUSHES' : 'SMASHES', sx + 46, 260);
+    sx += 100;
   }
-  centreText(ctx, 'Thank you for playing BALLAST', 480, '13px "Trebuchet MS", Verdana, sans-serif', 'rgba(244, 241, 222, 0.5)');
+  ctx.textAlign = 'left';
+
+  // Bests.
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText(
+    best > 0
+      ? `BEST SCORE  ${best.toLocaleString('en-US')}      STARS  ${totalStars}/27`
+      : 'No vault cleared yet — the first room teaches the trade.',
+    60,
+    300,
+  );
+
+  // Controls.
+  let cx = 60;
+  cx += chip(ctx, cx, 316, '← →  move') + 8;
+  cx += chip(ctx, cx, 316, 'SPACE  jump') + 8;
+  cx += chip(ctx, cx, 316, 'E  steal') + 8;
+  cx += chip(ctx, cx, 316, 'Q  give') + 8;
+  chip(ctx, cx, 316, 'P  pause');
+  cx = 60;
+  cx += chip(ctx, cx, 346, 'CLICK left steal · right give') + 8;
+  chip(ctx, cx, 346, 'R  retry room');
+
+  // Room select.
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  ctx.fillText('CHOOSE A ROOM', 60, 396);
+  for (let i = 0; i < 9; i += 1) {
+    const bx = 60 + i * 44;
+    const by = 406;
+    const locked = i >= unlocked;
+    const rect = { x: bx, y: by, w: 36, h: 36 };
+    ctx.fillStyle = locked ? '#1b1f38' : i === selected ? '#ffd76a' : '#232844';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, 36, 36, 7);
+    ctx.fill();
+    ctx.strokeStyle = locked ? '#2c3050' : 'rgba(217,180,91,0.6)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = locked ? '#4a5180' : i === selected ? '#1b1f38' : '#f2e8d8';
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(locked ? '·' : String(i + 1), bx + 18, by + 19);
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    if (!locked) buttons.push({ id: `room-${i}`, ...rect });
+  }
+
+  const startRect = { x: 60, y: 462, w: 404, h: 46 };
+  button(ctx, startRect, selected === 0 ? 'ENTER THE VAULT' : `START AT ROOM ${selected + 1}`, mouse, true);
+  buttons.push({ id: 'start', ...startRect });
+  const helpRect = { x: 60, y: 516, w: 196, h: 32 };
+  button(ctx, helpRect, showHelp ? 'HIDE THE CODEX' : 'HOW TO PLAY', mouse, false);
+  buttons.push({ id: 'help', ...helpRect });
+  const muteRect = { x: 268, y: 516, w: 196, h: 32 };
+  button(ctx, muteRect, opts.muted ? 'SOUND: OFF' : 'SOUND: ON', mouse, false);
+  buttons.push({ id: 'mute', ...muteRect });
+
+  if (showHelp) {
+    panel(ctx, 512, 36, 412, 528);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffd76a';
+    ctx.font = 'bold 20px system-ui, sans-serif';
+    ctx.fillText('THE WEIGHT CODEX', 536, 72);
+    drawCodex(ctx, 536, 88, 364);
+  }
+  return { buttons };
 }
 
-export { GAUGE };
+export function drawCodex(ctx, x, y, w) {
+  const rows = [
+    ['0 · FEATHER', 'Floats on a breath. Huge jumps, tossed by gales, rides updrafts. Cannot push.'],
+    ['1 · BALANCED', 'The travelling weight. Steady jumps, some wind resistance. The default.'],
+    ['2 · HEAVY', 'Pushes crates, holds switches down, stands firm in a gale. Shorter jumps.'],
+    ['3 · ANCHOR', 'Ignores wind. Smashes cracked floors on a hard landing. Barely jumps.'],
+  ];
+  let ry = y;
+  ctx.textAlign = 'left';
+  for (let i = 0; i < 4; i += 1) {
+    ctx.fillStyle = WEIGHTS[i].colour;
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.fillText(rows[i][0], x, ry + 14);
+    ctx.fillStyle = '#aeb4d4';
+    ctx.font = '12px system-ui, sans-serif';
+    wrapText(ctx, rows[i][1], x, ry + 30, w, 15);
+    ry += 52;
+  }
+  const rules = [
+    'E steals 1 weight from the nearest crate, boulder or golem.',
+    'Q gives 1 weight back — to a crate, a boulder, or a live mine.',
+    'A golem with nothing left pops. A fed mine fizzles harmlessly.',
+    'Switches open gates when the resting weight on them reaches 2.',
+    'Chain transfers within 3 seconds to raise the score multiplier.',
+    'Stars: clear the room · take every orb · beat par with no damage.',
+  ];
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  ctx.fillText('THE RULES OF THE TRADE', x, ry + 16);
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = '12px system-ui, sans-serif';
+  let ly = ry + 34;
+  for (const rule of rules) {
+    ctx.fillText('·  ' + rule, x, ly);
+    ly += 19;
+  }
+  return ly;
+}
+
+function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = text.split(' ');
+  let line = '';
+  let yy = y;
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      ctx.fillText(line, x, yy);
+      line = word;
+      yy += lineHeight;
+    } else {
+      line = test;
+    }
+  }
+  ctx.fillText(line, x, yy);
+}
+
+export function drawPause(ctx, opts) {
+  const { mouse } = opts;
+  ctx.fillStyle = 'rgba(8, 10, 20, 0.62)';
+  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+  panel(ctx, 240, 48, 480, 504);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.fillText('PAUSED', 268, 92);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('The vault waits. The weight does not.', 268, 112);
+  drawCodex(ctx, 268, 128, 424);
+  const buttons = [];
+  const resumeRect = { x: 268, y: 452, w: 424, h: 40 };
+  button(ctx, resumeRect, 'RESUME  (P)', mouse, true);
+  buttons.push({ id: 'resume', ...resumeRect });
+  const retryRect = { x: 268, y: 500, w: 204, h: 34 };
+  button(ctx, retryRect, 'RETRY ROOM  (R)', mouse, false);
+  buttons.push({ id: 'retry', ...retryRect });
+  const titleRect = { x: 484, y: 500, w: 208, h: 34 };
+  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
+  buttons.push({ id: 'title', ...titleRect });
+  return { buttons };
+}
+
+export function drawClear(ctx, opts) {
+  const { room, stars, breakdown, t, mouse, isLast } = opts;
+  ctx.fillStyle = 'rgba(8, 10, 20, 0.55)';
+  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+  panel(ctx, 260, 84, 440, 432);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#57e6a8';
+  ctx.font = 'bold 32px system-ui, sans-serif';
+  ctx.fillText('ROOM CLEAR!', FIELD.width / 2, 134);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText(`ROOM ${room.index + 1} · ${room.name.toUpperCase()}`, FIELD.width / 2, 156);
+  // Stars stamp in one by one.
+  for (let i = 0; i < 3; i += 1) {
+    const reveal = t > 0.35 + i * 0.3;
+    const earned = i < stars;
+    const scale = reveal ? 1 + Math.max(0, 0.4 - (t - 0.35 - i * 0.3) * 1.4) : 0.6;
+    const sx = FIELD.width / 2 + (i - 1) * 76;
+    ctx.save();
+    ctx.translate(sx, 196);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = reveal ? 1 : 0.25;
+    drawStar(ctx, 0, 0, 26, earned ? '#ffd76a' : '#3a4170');
+    ctx.restore();
+  }
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillStyle = '#aeb4d4';
+  ctx.fillText('CLEAR', FIELD.width / 2 - 76, 236);
+  ctx.fillText('ALL ORBS', FIELD.width / 2, 236);
+  ctx.fillText('PAR + CLEAN', FIELD.width / 2 + 76, 236);
+  // Breakdown.
+  const rows = [
+    ['Room score', breakdown.roomScore],
+    ['Time bonus', breakdown.timeBonus],
+    ['No-damage bonus', breakdown.noDamageBonus],
+    ['TOTAL SCORE', breakdown.totalScore],
+  ];
+  let ry = 268;
+  ctx.textAlign = 'left';
+  for (const [label, value] of rows) {
+    const isTotal = label === 'TOTAL SCORE';
+    ctx.fillStyle = isTotal ? '#ffd76a' : '#f2e8d8';
+    ctx.font = `${isTotal ? 'bold ' : ''}15px system-ui, sans-serif`;
+    ctx.fillText(label, 300, ry);
+    ctx.textAlign = 'right';
+    ctx.fillText(value.toLocaleString('en-US'), 660, ry);
+    ctx.textAlign = 'left';
+    ry += 28;
+  }
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(
+    `${breakdown.timeText}  ·  orbs ${breakdown.orbs}/2  ·  ${breakdown.damageTaken ? 'took damage' : 'no damage'}`,
+    FIELD.width / 2,
+    ry + 4,
+  );
+  const buttons = [];
+  const nextRect = { x: 300, y: 424, w: 360, h: 44 };
+  button(ctx, nextRect, isLast ? 'OPEN THE VAULT' : 'NEXT ROOM  →', mouse, true);
+  buttons.push({ id: 'next', ...nextRect });
+  const retryRect = { x: 300, y: 476, w: 172, h: 32 };
+  button(ctx, retryRect, 'REPLAY ROOM', mouse, false);
+  buttons.push({ id: 'replay', ...retryRect });
+  const titleRect = { x: 488, y: 476, w: 172, h: 32 };
+  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
+  buttons.push({ id: 'title', ...titleRect });
+  return { buttons };
+}
+
+function drawStar(ctx, x, y, r, colour) {
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i += 1) {
+    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const px = x + Math.cos(angle) * rad;
+    const py = y + Math.sin(angle) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+export function drawVictory(ctx, opts) {
+  const { totalScore, totalStars, totalTime, best, isNewBest, perRoom, mouse } = opts;
+  ctx.fillStyle = 'rgba(8, 10, 20, 0.72)';
+  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+  panel(ctx, 220, 44, 520, 512);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 34px system-ui, sans-serif';
+  ctx.fillText('THE VAULT IS OPEN', FIELD.width / 2, 96);
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.fillText('Nine rooms. Every weight accounted for. Pip keeps the last one.', FIELD.width / 2, 120);
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 40px system-ui, sans-serif';
+  ctx.fillText(totalScore.toLocaleString('en-US'), FIELD.width / 2, 168);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText('FINAL SCORE', FIELD.width / 2, 188);
+  if (isNewBest) {
+    ctx.fillStyle = '#57e6a8';
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.fillText('★ NEW BEST ★', FIELD.width / 2, 210);
+  } else {
+    ctx.fillText(`BEST ${best.toLocaleString('en-US')}`, FIELD.width / 2, 210);
+  }
+  // Per-room star table.
+  let ty = 240;
+  ctx.textAlign = 'left';
+  ctx.font = '13px system-ui, sans-serif';
+  for (let i = 0; i < 9; i += 1) {
+    const y = ty + i * 22;
+    ctx.fillStyle = '#aeb4d4';
+    ctx.fillText(`${i + 1}. ${perRoom[i].name}`, 280, y);
+    ctx.textAlign = 'right';
+    for (let s = 0; s < 3; s += 1) {
+      drawStar(ctx, 640 + s * 20, y - 4, 7, s < perRoom[i].stars ? '#ffd76a' : '#3a4170');
+    }
+    ctx.fillStyle = '#f2e8d8';
+    ctx.fillText(perRoom[i].score.toLocaleString('en-US'), 620, y);
+    ctx.textAlign = 'left';
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '12px system-ui, sans-serif';
+  const mins = Math.floor(totalTime / 60);
+  const secs = Math.floor(totalTime % 60);
+  ctx.fillText(
+    `STARS ${totalStars}/27   ·   TIME ${mins}:${String(secs).padStart(2, '0')}   ·   NEXT GOAL: ${totalStars < 27 ? 'replay a room for its missing stars' : 'a perfect vault — every star earned'}`,
+    FIELD.width / 2,
+    452,
+  );
+  const buttons = [];
+  const againRect = { x: 300, y: 472, w: 360, h: 44 };
+  button(ctx, againRect, 'PLAY AGAIN', mouse, true);
+  buttons.push({ id: 'again', ...againRect });
+  const titleRect = { x: 300, y: 524, w: 360, h: 28 };
+  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
+  buttons.push({ id: 'title', ...titleRect });
+  return { buttons };
+}
+
+export function drawFailed(ctx, opts) {
+  const { mouse, cause } = opts;
+  // Name the cause: a failure the player understands is a lesson, not a wall.
+  const causeLine =
+    cause === 'golem'
+      ? 'A golem caught you — steal its weight first.'
+      : cause === 'mine'
+        ? 'A live mine caught you — feed it weight first.'
+        : cause === 'pit'
+          ? 'The pit took a heart. Mind the gaps.'
+          : 'The vault resets the room. The weight resets too.';
+  ctx.fillStyle = 'rgba(8, 10, 20, 0.55)';
+  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+  panel(ctx, 300, 208, 360, 184);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6b5e';
+  ctx.font = 'bold 26px system-ui, sans-serif';
+  ctx.fillText('OUT OF HEARTS', FIELD.width / 2, 252);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText(causeLine, FIELD.width / 2, 278);
+  const buttons = [];
+  const retryRect = { x: 340, y: 300, w: 280, h: 42 };
+  button(ctx, retryRect, 'TRY AGAIN  (R)', mouse, true);
+  buttons.push({ id: 'retry', ...retryRect });
+  const titleRect = { x: 340, y: 350, w: 280, h: 30 };
+  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
+  buttons.push({ id: 'title', ...titleRect });
+  return { buttons };
+}
+
+export { SCORE };

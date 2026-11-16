@@ -1,79 +1,154 @@
-// BALLAST tuning: every number that shapes how the game feels lives here,
-// so a room or a mechanic can be re-tuned without touching the simulation.
+// Every tuning number and colour in one place. The playfield is a fixed 960x600
+// logical area; the renderer scales it to the window, so no rule below depends
+// on the screen size. Rooms are single-screen: 24 by 15 tiles of 40 pixels.
 
-export const TILE = 40;
-export const COLS = 24;
-export const ROWS = 15;
-export const VIEW_W = COLS * TILE; // 960
-export const VIEW_H = ROWS * TILE; // 600
-export const WIDTH = VIEW_W;
-export const HEIGHT = VIEW_H;
-export const STEP = 1 / 60; // fixed simulation step
+export const FIELD = { width: 960, height: 600, tile: 40, cols: 24, rows: 15 };
 
-// Movement, designed by jump height and time-to-apex (rise gravity g = 2h/t^2,
-// jump speed v = 2h/t): a full jump rises ~2.6 tiles in ~0.34 s at gauge 1.
-export const MOVE = {
-  runSpeed: 225,
-  accel: 2600,
-  groundFriction: 2200,
-  airAccel: 1700,
-  jumpSpeed: 640,
-  riseGravity: 1980,
-  fallGravity: 2650,
-  maxFall: 720,
-  coyote: 0.1,
-  buffer: 0.12,
-  jumpCut: 0.45, // upward speed kept when the jump key is released early
+/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
+export const STEP = 1 / 60;
+
+export const PLAYER = {
+  width: 30,
+  height: 44,
+  /** Reach of a steal or a give, in pixels, from the player's centre. */
+  range: 150,
+  /** Seconds between transfers. */
+  transferCooldown: 0.22,
+  /** Seconds a jump still works after leaving ground. */
+  coyote: 0.09,
+  /** Seconds a jump pressed early is remembered. */
+  jumpBuffer: 0.12,
+  /** Seconds of mercy after taking a hit. */
+  invulnerable: 1.3,
+  /** Knockback on taking a hit. */
+  hurtKnockX: 260,
+  hurtKnockY: -320,
 };
 
-// How Pip's carried weight reshapes the same body. Gauge 0 floats, gauge 3
-// is an anchor. Values multiply the gauge-1 baseline.
-export const GAUGE = [
-  { label: 'Feather', gravity: 0.52, jump: 1.06, maxFall: 0.5, wind: 1.35, color: '#8fd8ff' },
-  { label: 'Balanced', gravity: 1.0, jump: 1.0, maxFall: 1.0, wind: 1.0, color: '#ffd75e' },
-  { label: 'Heavy', gravity: 1.15, jump: 1.05, maxFall: 1.15, wind: 0.6, color: '#f2a541' },
-  { label: 'Anchor', gravity: 1.55, jump: 0.78, maxFall: 1.3, wind: 0.0, color: '#ff7a59' },
+/**
+ * The four weight states. Stealing raises the gauge, giving lowers it. Each
+ * state is a different way of moving through the same room: light floats and
+ * jumps high but the wind owns it; anchor barely jumps but nothing moves it,
+ * it pushes crates, holds switches and smashes cracked floors.
+ */
+export const WEIGHTS = [
+  {
+    name: 'FEATHER',
+    gauge: 0,
+    speed: 235,
+    gravity: 880,
+    jump: -565,
+    maxFall: 165,
+    wind: 1.0,
+    updraft: 1.0,
+    push: false,
+    smash: false,
+    colour: '#9fe8ff',
+    glow: '#bdf3ff',
+    verb: 'Floats · huge jump · wind tosses you',
+  },
+  {
+    name: 'BALANCED',
+    gauge: 1,
+    speed: 255,
+    gravity: 1500,
+    jump: -645,
+    maxFall: 540,
+    wind: 0.55,
+    updraft: 0.35,
+    push: false,
+    smash: false,
+    colour: '#ffd76a',
+    glow: '#ffe9a8',
+    verb: 'Steady · standard jump',
+  },
+  {
+    name: 'HEAVY',
+    gauge: 2,
+    speed: 225,
+    gravity: 1950,
+    jump: -590,
+    maxFall: 660,
+    wind: 0.25,
+    updraft: 0.0,
+    push: true,
+    smash: false,
+    colour: '#ff9a4d',
+    glow: '#ffc08a',
+    verb: 'Pushes crates · holds switches',
+  },
+  {
+    name: 'ANCHOR',
+    gauge: 3,
+    speed: 175,
+    gravity: 2450,
+    jump: -490,
+    maxFall: 800,
+    wind: 0.0,
+    updraft: 0.0,
+    push: true,
+    smash: true,
+    colour: '#ff6b5e',
+    glow: '#ffa89e',
+    verb: 'Smashes cracked floors · ignores wind',
+  },
 ];
 
-export const TRANSFER = {
-  range: 120, // px from Pip's centre to an object's centre
-  cooldown: 0.25,
-  switchWeight: 2, // object weight that holds a floor switch down
-  smashWeight: 3, // object weight (or gauge) that breaks cracked floors
-  smashFallSpeed: 420, // px/s of downward speed needed to smash
-};
-
-export const WIND = {
-  updraftLift: 2900, // px/s^2 at gauge 0, scaled down per gauge step
-  updraftScale: [1.0, 0.75, 0.3, 0.0], // gauge 1 still rises, slowly; gauge 2+ sinks
-  updraftRiseCap: 260, // px/s upward speed cap inside a shaft
-  galePush: 4800, // px/s^2 at gauge 0, scaled by GAUGE wind factor: beats running below gauge 3
-};
-
 export const HEARTS_PER_ROOM = 3;
-export const ORB_SCORE = 100;
-export const NO_DAMAGE_BONUS = 250;
-export const TIME_BONUS_PER_SECOND = 10;
+
+/** Score values. Orb and hazard scores are multiplied by the combo. */
+export const SCORE = {
+  orb: 100,
+  golemPop: 150,
+  mineFizzle: 150,
+  roomClear: 500,
+  timeBonusPerSecond: 20,
+  noDamageBonus: 300,
+  /** Seconds between transfers before the combo chain breaks. */
+  comboWindow: 3.0,
+  comboMax: 3,
+};
+
+/** Fall speed a weight-3 landing needs to smash a cracked floor. */
+export const SMASH_MIN_FALL = 420;
+
+export const GOLEM = { width: 34, height: 42, speed: 62, weight: 1 };
+export const CRATE = { size: 38 };
+export const BOULDER = { size: 40 };
+export const MINE = { size: 30, armRadius: 170 };
+export const ORB = { radius: 11 };
 
 export const PALETTE = {
-  skyTop: '#0d1030',
-  skyBottom: '#1d2352',
-  star: '#e8ecff',
-  moon: '#f4f1de',
-  moonGlow: 'rgba(244, 241, 222, 0.22)',
-  hillFar: '#252c58',
-  hillNear: '#1a2048',
-  brick: '#3a3f6b',
-  brickDark: '#2c3160',
-  brickEdge: '#4c538a',
-  moss: '#46b98a',
-  mossDark: '#2f8f68',
-  crack: '#1c1f3d',
-  amber: '#f2a541',
-  gold: '#ffd75e',
-  portal: '#7ef0c8',
-  portalDark: '#2f8f68',
-  ink: '#0b0e1d',
-  paper: '#f4f1de',
-  dim: '#9aa3d0',
+  skyTop: '#1c2340',
+  skyMid: '#252d52',
+  skyBottom: '#2e355e',
+  farArch: '#20264a',
+  midArch: '#2a3160',
+  ground: '#3a4270',
+  groundTop: '#565f96',
+  groundEdge: '#6b74ad',
+  platform: '#4a5284',
+  platformTop: '#7d86b8',
+  cracked: '#8a6a52',
+  crackedEdge: '#c99a6b',
+  text: '#f4f1e6',
+  muted: '#aab0d0',
+  gold: '#ffd76a',
+  panel: 'rgba(16, 19, 38, 0.88)',
+  panelEdge: '#ffd76a',
+  door: '#57e6a8',
+  doorGlow: '#a8f5d2',
+  gale: 'rgba(159, 232, 255, 0.10)',
+  updraft: 'rgba(255, 215, 106, 0.10)',
+  danger: '#ff6b5e',
+  switchOff: '#5a618c',
+  switchOn: '#57e6a8',
+  gate: '#8b93bd',
 };
+
+export const FONT = '"Avenir Next", "Segoe UI", system-ui, sans-serif';
+export const FONT_DISPLAY = 'Georgia, "Times New Roman", serif';
+
+/** Where bests are kept between visits (this browser only). */
+export const BEST_KEY = 'ballast-v3.best';
+export const MUTE_KEY = 'ballast-v3.muted';

@@ -1,107 +1,178 @@
-// The heads-up display: hearts, room name + timer + par, score and orbs,
-// and the weight gauge — the game's identity, drawn large enough to read at
-// a glance. The gauge pops on every transfer and shows its label.
+// The heads-up display: four corners, each carrying its own information, plus
+// the room-progress strip along the bottom. The weight gauge is the largest
+// element — the whole game is about weight, so the gauge must read from across
+// the room, and it must read in a screenshot shrunk to a quarter of its size.
 
-import { WIDTH, GAUGE, TRANSFER } from './config.js';
+import { FIELD, WEIGHTS, SCORE, PALETTE } from './config.js';
 
-function fmtTime(seconds) {
+function panel(ctx, x, y, w, h, alpha = 0.72) {
+  ctx.save();
+  ctx.fillStyle = `rgba(12, 14, 28, ${alpha})`;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(217, 180, 91, 0.35)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function drawHeart(ctx, x, y, filled) {
-  ctx.fillStyle = filled ? '#ff5d6e' : 'rgba(244, 241, 222, 0.2)';
-  ctx.beginPath();
-  ctx.moveTo(x, y + 5);
-  ctx.bezierCurveTo(x - 9, y - 4, x - 4, y - 11, x, y - 5);
-  ctx.bezierCurveTo(x + 4, y - 11, x + 9, y - 4, x, y + 5);
-  ctx.fill();
-}
+export function drawHud(ctx, view) {
+  const { world, totalScore, stars, roomCount, best, muted, time } = view;
+  const { state } = world;
+  const p = state.player;
+  const w = WEIGHTS[p.gauge];
 
-export function drawHUD(ctx, room, muted, time) {
-  const p = room.player;
-  // Top bar.
-  ctx.fillStyle = 'rgba(11, 14, 29, 0.72)';
-  ctx.fillRect(0, 0, WIDTH, 46);
-  ctx.fillStyle = 'rgba(244, 241, 222, 0.14)';
-  ctx.fillRect(0, 46, WIDTH, 1);
-
-  // Hearts.
-  for (let i = 0; i < 3; i++) drawHeart(ctx, 24 + i * 24, 26, i < room.hearts);
-
-  // Room name, timer, par.
-  ctx.fillStyle = '#f4f1de';
-  ctx.font = 'bold 15px "Trebuchet MS", Verdana, sans-serif';
+  // Top-left: room name, objective, hearts.
+  panel(ctx, 12, 10, 318, 66);
+  ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
-  ctx.fillText(room.def.name, 104, 20);
-  const over = room.time > room.def.par;
-  ctx.fillStyle = over ? '#ff8a8a' : '#9aa3d0';
-  ctx.font = '13px "Trebuchet MS", Verdana, sans-serif';
-  ctx.fillText(`⏱ ${fmtTime(room.time)} / par ${fmtTime(room.def.par)}`, 104, 37);
-
-  // Score + orbs.
-  ctx.textAlign = 'right';
-  ctx.fillStyle = '#ffd75e';
-  ctx.font = 'bold 15px "Trebuchet MS", Verdana, sans-serif';
-  ctx.fillText(`★ ${room.score}`, WIDTH - 24, 20);
-  ctx.fillStyle = '#f4f1de';
-  ctx.font = '13px "Trebuchet MS", Verdana, sans-serif';
-  ctx.fillText(`● ${room.orbsTaken}/${room.orbTotal} orbs`, WIDTH - 24, 37);
-
-  // Weight gauge, centre stage.
-  const g = GAUGE[p.gauge];
-  const gw = 190;
-  const gx = WIDTH / 2 - gw / 2;
-  const gy = 12;
-  const pop = 1 + p.gaugePop * 0.08;
-  ctx.save();
-  ctx.translate(WIDTH / 2, 24);
-  ctx.scale(pop, pop);
-  ctx.translate(-WIDTH / 2, -24);
-  ctx.fillStyle = 'rgba(244, 241, 222, 0.12)';
-  ctx.beginPath();
-  ctx.roundRect(gx, gy, gw, 22, 11);
-  ctx.fill();
-  for (let i = 0; i < 3; i++) {
-    ctx.fillStyle = i < p.gauge ? g.color : 'rgba(244, 241, 222, 0.18)';
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = 'bold 16px system-ui, sans-serif';
+  ctx.fillText(`ROOM ${state.roomIndex + 1} · ${state.def.name.toUpperCase()}`, 24, 32);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText(state.def.objective, 24, 50);
+  for (let i = 0; i < 3; i += 1) {
+    const x = 24 + i * 26;
+    const y = 64;
+    const filled = i < p.hearts;
+    ctx.fillStyle = filled ? '#ff6b5e' : '#3a4170';
     ctx.beginPath();
-    ctx.roundRect(gx + 5 + i * 46, gy + 5, 42, 12, 6);
+    ctx.moveTo(x, y + 4);
+    ctx.bezierCurveTo(x - 7, y - 4, x - 12, y + 3, x, y + 11);
+    ctx.bezierCurveTo(x + 12, y + 3, x + 7, y - 4, x, y + 4);
     ctx.fill();
   }
-  ctx.fillStyle = '#f4f1de';
-  ctx.font = 'bold 12px "Trebuchet MS", Verdana, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(`WEIGHT ${p.gauge} · ${g.label.toUpperCase()}`, WIDTH / 2, gy + 33);
-  ctx.restore();
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText('R retry · P pause · M sound', 106, 72);
 
-  // Gauge hint line under the bar.
-  ctx.fillStyle = 'rgba(244, 241, 222, 0.75)';
-  ctx.font = '12px "Trebuchet MS", Verdana, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(`E steal weight · Q give weight · range ${TRANSFER.range}px`, WIDTH / 2, 62);
-
-  // Mute + controls reminder, bottom corners.
-  ctx.textAlign = 'left';
-  ctx.fillStyle = 'rgba(244, 241, 222, 0.55)';
-  ctx.font = '12px "Trebuchet MS", Verdana, sans-serif';
-  ctx.fillText('← → move · Space jump · R retry · Esc pause', 12, 588);
+  // Top-right: score, multiplier, orbs, timer vs par.
+  panel(ctx, FIELD.width - 262, 10, 250, 66);
   ctx.textAlign = 'right';
-  ctx.fillText(muted ? 'M · sound OFF' : 'M · sound ON', WIDTH - 12, 588);
+  ctx.fillStyle = '#ffd76a';
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText(totalScore.toLocaleString('en-US'), FIELD.width - 24, 36);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '12px system-ui, sans-serif';
+  const mult = state.combo > 1 ? `  ×${Math.max(1, state.combo)} COMBO` : '';
+  ctx.fillText(`SCORE${mult}`, FIELD.width - 24, 52);
+  ctx.fillStyle = state.combo > 1 ? '#ffd76a' : '#aeb4d4';
+  ctx.font = 'bold 12px system-ui, sans-serif';
+  ctx.fillText(`◆ ${state.orbsTaken}/2`, FIELD.width - 118, 70);
+  ctx.fillStyle = state.time > state.def.par ? '#ff6b5e' : '#aeb4d4';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText(`${formatTime(state.time)} / par ${formatTime(state.def.par)}`, FIELD.width - 24, 70);
 
-  // Room hint, fading in the first seconds.
-  if (room.time < 5 && room.def.hint) {
-    const a = room.time < 4 ? 1 : (5 - room.time);
-    ctx.globalAlpha = a;
-    ctx.fillStyle = 'rgba(11, 14, 29, 0.8)';
-    ctx.font = 'bold 14px "Trebuchet MS", Verdana, sans-serif';
-    const w = ctx.measureText(room.def.hint).width + 28;
+  // Bottom-left: the weight gauge — large, labelled, with its effect spelled out.
+  const gx = 12;
+  const gy = FIELD.height - 92;
+  panel(ctx, gx, gy, 300, 80);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = w.colour;
+  ctx.font = 'bold 15px system-ui, sans-serif';
+  ctx.fillText(`WEIGHT ${p.gauge} · ${w.name}`, gx + 14, gy + 22);
+  for (let i = 0; i < 3; i += 1) {
+    const bx = gx + 14 + i * 34;
+    const by = gy + 32;
+    ctx.fillStyle = i < p.gauge ? w.colour : '#2c3050';
     ctx.beginPath();
-    ctx.roundRect(WIDTH / 2 - w / 2, 84, w, 30, 8);
+    ctx.roundRect(bx, by, 28, 16, 4);
     ctx.fill();
-    ctx.fillStyle = '#ffd75e';
+    ctx.strokeStyle = '#d9b45b';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText(w.verb, gx + 124, gy + 45);
+  ctx.fillStyle = '#f2e8d8';
+  ctx.font = 'bold 11px system-ui, sans-serif';
+  ctx.fillText('E steal', gx + 14, gy + 66);
+  ctx.fillStyle = '#9fe8ff';
+  ctx.fillText('Q give', gx + 62, gy + 66);
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText('click: left steal · right give', gx + 112, gy + 66);
+
+  // Bottom-right: room progress — nine dots, stars earned, best score.
+  const px = FIELD.width - 262;
+  const py = FIELD.height - 92;
+  panel(ctx, px, py, 250, 80);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText('VAULT PROGRESS', px + 14, py + 20);
+  for (let i = 0; i < roomCount; i += 1) {
+    const dx = px + 18 + i * 26;
+    const dy = py + 36;
+    const earned = stars[i] || 0;
+    const current = i === state.roomIndex;
+    ctx.beginPath();
+    ctx.arc(dx, dy, current ? 9 : 7, 0, Math.PI * 2);
+    ctx.fillStyle = current ? '#ffd76a' : earned > 0 ? '#57e6a8' : '#2c3050';
+    ctx.fill();
+    ctx.strokeStyle = current ? '#fff3c4' : '#4a5180';
+    ctx.lineWidth = current ? 2 : 1;
+    ctx.stroke();
+    if (earned > 0 && !current) {
+      ctx.fillStyle = '#0c0e1c';
+      ctx.font = 'bold 9px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(earned), dx, dy + 3);
+      ctx.textAlign = 'left';
+    }
+  }
+  ctx.fillStyle = '#aeb4d4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText(
+    best > 0 ? `BEST ${best.toLocaleString('en-US')}` : 'NO BEST YET — FINISH A ROOM',
+    px + 14,
+    py + 66,
+  );
+  if (muted) {
+    ctx.fillStyle = '#ff9a5c';
+    ctx.font = 'bold 11px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('MUTED', px + 236, py + 66);
+    ctx.textAlign = 'left';
+  }
+
+  // Combo callout in the centre-top when a chain is running.
+  if (state.combo >= 2 && state.comboTimer > 0) {
+    const frac = state.comboTimer / SCORE.comboWindow;
+    ctx.save();
     ctx.textAlign = 'center';
-    ctx.fillText(room.def.hint, WIDTH / 2, 104);
-    ctx.globalAlpha = 1;
+    ctx.font = 'bold 20px system-ui, sans-serif';
+    ctx.fillStyle = '#ffd76a';
+    ctx.fillText(`COMBO ×${state.combo}`, FIELD.width / 2, 34);
+    ctx.fillStyle = '#2c3050';
+    ctx.fillRect(FIELD.width / 2 - 50, 42, 100, 5);
+    ctx.fillStyle = '#ffd76a';
+    ctx.fillRect(FIELD.width / 2 - 50, 42, 100 * frac, 5);
+    ctx.restore();
   }
+
+  // The room's hint line, fading after the first seconds of the room. It sits
+  // under the top HUD, clear of the action below.
+  if (state.time < 6 && state.def.hint) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, (6 - state.time) / 1.5);
+    ctx.textAlign = 'center';
+    ctx.font = '13px system-ui, sans-serif';
+    ctx.fillStyle = '#f2e8d8';
+    ctx.shadowColor = '#000';
+    ctx.shadowBlur = 6;
+    ctx.fillText(state.def.hint, FIELD.width / 2, 96);
+    ctx.restore();
+  }
+  void time;
+  void PALETTE;
 }
