@@ -1,10 +1,11 @@
-// BALLAST — A Weight-Thief's Tale (Node 22, standard library only). The game is
-// this directory's game/ folder: plain static files a desktop browser loads
-// offline (game/index.html and its ES modules, no library, no network request).
-// This program hands it in: it copies game/ and screenshots/ from beside this
-// file to /output and writes /output/dossier.json with the vendored make.fun
-// library. Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+// BALLAST — A Weight-Thief's Tale: the hand-in program (Node 22, standard
+// library only). The game is this directory's game/ folder: plain static
+// files a desktop browser loads offline (game/index.html and its ES modules,
+// no library, no network request). This program copies game/ and screenshots/
+// from beside this file to /output and writes /output/dossier.json with the
+// vendored make.fun library. Serve it locally with `node serve.ts`, then open
+// http://localhost:8080. Outside the grader's container, MAKEFUN_OUTPUT_DIR
+// stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -22,9 +23,10 @@ if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), joi
 
 // The screenshots are the entry's face: refuse to hand in a set that breaks
 // the caps or is not a real JPEG, rather than letting the grader find out.
+// The rules require 3-4 screenshots, each a JPEG under the byte cap.
 const shots = readdirSync(join(out, 'screenshots')).filter((name) => name.endsWith('.jpg')).sort();
-if (shots.length === 0 || shots.length > 4) {
-  throw new Error(`expected 1-4 screenshots, found ${shots.length}`);
+if (shots.length < 3 || shots.length > 4) {
+  throw new Error(`expected 3-4 screenshots, found ${shots.length}`);
 }
 for (const name of shots) {
   const path = join(out, 'screenshots', name);

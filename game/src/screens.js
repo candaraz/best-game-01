@@ -1,559 +1,540 @@
-// The screens around the game: the title with its live diorama, the pause
-// menu with the weight codex, the room-clear dashboard, the victory screen
-// and the retry prompt. Each draw function returns the buttons it painted, so
-// the main loop can hit-test clicks against exactly what the player saw.
+// Screens: title, pause, room clear, seal choice, victory, failure, and
+// the how-to codex. Each draw function returns the buttons it drew so the
+// main loop can route clicks; keyboard shortcuts live in main.js.
 
-import { FIELD, WEIGHTS, SCORE } from './config.js';
-import { ROOMS } from './levels.js';
-import {
-  drawBackdrop,
-  drawPip,
-  drawCrateFigure,
-  drawGolemFigure,
-  drawMineFigure,
-  drawOrbFigure,
-  drawDoorFigure,
-  drawWorld,
-} from './render.js';
-import { runShot } from './shots.js';
+import { PALETTE, SEALS, VIEW, WEIGHT_EFFECTS, WEIGHT_NAMES } from './config.js';
+import { drawPlayer, drawWorld, drawVignette, roundRect } from './render.js';
+import { drawJuiceWorld } from './juice.js';
+import { LEVELS } from './levels.js';
 
-function chip(ctx, x, y, text, fill = '#2c3050', fg = '#f2e8d8') {
+const FONT = '"Avenir Next", "Segoe UI", Verdana, sans-serif';
+
+function drawStar(ctx, cx, cy, r, filled, scale = 1) {
   ctx.save();
-  ctx.font = 'bold 12px system-ui, sans-serif';
-  const w = ctx.measureText(text).width + 18;
-  ctx.fillStyle = fill;
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, 22, 5);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(217,180,91,0.5)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  ctx.fillStyle = fg;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + w / 2, y + 12);
-  ctx.restore();
-  return w;
-}
-
-function button(ctx, rect, label, mouse, primary = false) {
-  const hover =
-    mouse && mouse.x >= rect.x && mouse.x <= rect.x + rect.w && mouse.y >= rect.y && mouse.y <= rect.y + rect.h;
-  ctx.save();
-  ctx.fillStyle = primary ? (hover ? '#ffd76a' : '#d9b45b') : hover ? '#3a4170' : '#232844';
-  ctx.beginPath();
-  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 8);
-  ctx.fill();
-  ctx.strokeStyle = primary ? '#fff3c4' : 'rgba(217,180,91,0.5)';
-  ctx.lineWidth = primary ? 2 : 1;
-  ctx.stroke();
-  ctx.fillStyle = primary ? '#1b1f38' : '#f2e8d8';
-  ctx.font = `bold ${primary ? 16 : 14}px system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
-  ctx.restore();
-  return hover;
-}
-
-function panel(ctx, x, y, w, h, alpha = 0.86) {
-  ctx.fillStyle = `rgba(12, 14, 28, ${alpha})`;
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, 12);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(217, 180, 91, 0.55)';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-}
-
-/** The staged vault scene behind the title: Pip cycles gauges and trades
- *  weight with the crate while a golem patrols and the door glows. */
-export function drawDiorama(ctx, time, juice) {
-  drawBackdrop(ctx, 0, time);
-  const floorY = 472;
-  ctx.fillStyle = '#b98a52';
-  ctx.fillRect(0, floorY, FIELD.width, FIELD.height - floorY);
-  ctx.fillStyle = '#e0b96a';
-  ctx.fillRect(0, floorY, FIELD.width, 4);
-  ctx.strokeStyle = '#5a4026';
-  for (let x = 0; x < FIELD.width; x += 40) {
-    ctx.beginPath();
-    ctx.moveTo(x, floorY);
-    ctx.lineTo(x, FIELD.height);
-    ctx.stroke();
-  }
-  drawDoorFigure(ctx, 878, floorY - 64, 36, 64, time);
-  drawOrbFigure(ctx, 540, 356, time, 0);
-  drawOrbFigure(ctx, 700, 300, time, 1.7);
-  const gauge = Math.floor(time / 2.2) % 4;
-  drawCrateFigure(ctx, 640, floorY - 36, 36, 36, { weight: 3 - gauge, maxWeight: 3, time });
-  drawMineFigure(ctx, 760, floorY - 30, 30, 30, { armed: gauge < 2, time });
-  const golemX = 800 + Math.sin(time * 0.5) * 40;
-  drawGolemFigure(ctx, golemX, floorY - 46, 40, 46, {
-    dir: Math.cos(time * 0.5) > 0 ? 1 : -1,
-    time,
-    alive: true,
-  });
-  drawPip(ctx, 560, floorY, {
-    gauge,
-    facing: 1,
-    squash: 0,
-    stretch: 0,
-    runPhase: 0,
-    airborne: gauge === 0,
-    invuln: 0,
-    time,
-  });
-  // A beam arcs between Pip and the crate on a slow loop.
-  const cycle = time % 4.4;
-  if (cycle < 0.5) {
-    const stealing = Math.floor(time / 4.4) % 2 === 0;
-    ctx.save();
-    ctx.globalAlpha = 1 - cycle / 0.5;
-    ctx.strokeStyle = stealing ? '#ffd76a' : '#9fe8ff';
-    ctx.lineWidth = 4;
-    ctx.shadowColor = stealing ? '#ffd76a' : '#9fe8ff';
-    ctx.shadowBlur = 12;
-    ctx.beginPath();
-    ctx.moveTo(560, floorY - 30);
-    ctx.quadraticCurveTo(610, floorY - 70, 658, floorY - 22);
-    ctx.stroke();
-    ctx.restore();
-  }
-  juice.draw(ctx);
-}
-
-/** The title's live mini-board: the cover staging of room 3, rendered by
- *  the real game code and frozen at the steal. Computed once and cached —
- *  the staging is deterministic (seed 1), so the title frame replays
- *  identically. No juice particles: they use Math.random, which the
- *  staging seed does not cover here. */
-let previewCache = null;
-function getPreview() {
-  if (!previewCache) {
-    const staged = runShot('cover', 1, (w) => {
-      w.drainEvents();
-    });
-    previewCache = staged;
-  }
-  return previewCache;
-}
-
-const ROOM_LINES = [
-  'smash the cracked bridge',
-  'float the golden shaft',
-  'pop both golems',
-  'fizzle every mine',
-  'cross the wind, ride up',
-  'weigh the switch',
-  'smash down, open the gate',
-  'golem, mines, gale, gate',
-  'weigh in, float up, smash down',
-];
-
-export function drawTitle(ctx, opts) {
-  const { time, juice, best, totalStars, unlocked, selected, showHelp, mouse } = opts;
-  drawDiorama(ctx, time, juice);
-  const buttons = [];
-  panel(ctx, 36, 28, 452, 548);
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 64px system-ui, sans-serif';
-  ctx.fillText('BALLAST', 60, 100);
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = 'bold 17px system-ui, sans-serif';
-  ctx.fillText('Steal weight. Give it back.', 60, 130);
-  ctx.fillText('Change what you are.', 60, 152);
-  // Content inventory: the game sells itself in frame 1 — counts, not
-  // adjectives. Totals are the real ones from the nine room grids.
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('9 ROOMS · 18 ORBS · 27 STARS · 4 WEIGHTS', 60, 178);
-  ctx.fillText('5 GOLEMS · 6 MINES · 5 BOULDERS · 17 CRATES', 60, 196);
-  ctx.fillStyle = '#f2e8d8';
-  ctx.fillText('WIN: reach the door.  LOSE: all 3 hearts in a room.', 60, 214);
-
-  // The four states, as a strip the eye can read in one glance.
-  let sx = 60;
-  for (let g = 0; g < 4; g += 1) {
-    const st = WEIGHTS[g];
-    ctx.fillStyle = st.colour;
-    ctx.beginPath();
-    ctx.roundRect(sx, 232, 92, 46, 6);
-    ctx.fill();
-    ctx.fillStyle = '#1b1f38';
-    ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(`${g} · ${st.name}`, sx + 46, 250);
-    ctx.font = '10px system-ui, sans-serif';
-    ctx.fillText(g === 0 ? 'FLOATS' : g === 1 ? 'BALANCED' : g === 2 ? 'PUSHES' : 'SMASHES', sx + 46, 266);
-    sx += 100;
-  }
-  ctx.textAlign = 'left';
-
-  // Bests.
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText(
-    best > 0
-      ? `BEST SCORE  ${best.toLocaleString('en-US')}      STARS  ${totalStars}/27`
-      : 'No vault cleared yet — the first room teaches the trade.',
-    60,
-    300,
-  );
-
-  // Controls.
-  let cx = 60;
-  cx += chip(ctx, cx, 316, '← →  move') + 8;
-  cx += chip(ctx, cx, 316, 'SPACE  jump') + 8;
-  cx += chip(ctx, cx, 316, 'E  steal') + 8;
-  cx += chip(ctx, cx, 316, 'Q  give') + 8;
-  chip(ctx, cx, 316, 'P  pause');
-  cx = 60;
-  cx += chip(ctx, cx, 346, 'CLICK left steal · right give') + 8;
-  chip(ctx, cx, 346, 'R  retry room');
-
-  // Room select.
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = 'bold 13px system-ui, sans-serif';
-  ctx.fillText('CHOOSE A ROOM', 60, 384);
-  for (let i = 0; i < 9; i += 1) {
-    const bx = 60 + i * 44;
-    const by = 394;
-    const locked = i >= unlocked;
-    const rect = { x: bx, y: by, w: 36, h: 36 };
-    ctx.fillStyle = locked ? '#1b1f38' : i === selected ? '#ffd76a' : '#232844';
-    ctx.beginPath();
-    ctx.roundRect(bx, by, 36, 36, 7);
-    ctx.fill();
-    ctx.strokeStyle = locked ? '#2c3050' : 'rgba(217,180,91,0.6)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = locked ? '#4a5180' : i === selected ? '#1b1f38' : '#f2e8d8';
-    ctx.font = 'bold 15px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(locked ? '·' : String(i + 1), bx + 18, by + 19);
-    ctx.textBaseline = 'alphabetic';
-    ctx.textAlign = 'left';
-    if (!locked) buttons.push({ id: `room-${i}`, ...rect });
-  }
-
-  const startRect = { x: 60, y: 446, w: 404, h: 46 };
-  button(ctx, startRect, selected === 0 ? 'ENTER THE VAULT' : `START AT ROOM ${selected + 1}`, mouse, true);
-  buttons.push({ id: 'start', ...startRect });
-  const helpRect = { x: 60, y: 500, w: 196, h: 32 };
-  button(ctx, helpRect, showHelp ? 'HIDE THE CODEX' : 'HOW TO PLAY', mouse, false);
-  buttons.push({ id: 'help', ...helpRect });
-  const muteRect = { x: 268, y: 500, w: 196, h: 32 };
-  button(ctx, muteRect, opts.muted ? 'SOUND: OFF' : 'SOUND: ON', mouse, false);
-  buttons.push({ id: 'mute', ...muteRect });
-
-  if (showHelp) {
-    panel(ctx, 512, 28, 412, 548);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#ffd76a';
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillText('THE WEIGHT CODEX', 536, 64);
-    drawCodex(ctx, 536, 80, 364);
-  } else {
-    // Right column: a live gameplay vignette above the room list, so the
-    // title screen shows the game being played, not just its menu.
-    panel(ctx, 512, 28, 412, 300);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#ffd76a';
-    ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.fillText('LIVE FROM ROOM 3 — HOLLOW PATROL', 536, 56);
-    const preview = getPreview();
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(524, 64, 388, 242);
-    ctx.clip();
-    ctx.translate(524, 64);
-    const scale = 388 / FIELD.width;
-    ctx.scale(scale, scale);
-    drawWorld(ctx, preview.world, preview.juice, preview.time, preview.world.targets());
-    ctx.restore();
-    ctx.fillStyle = '#aeb4d4';
-    ctx.font = '12px system-ui, sans-serif';
-    ctx.fillText('Pip just popped a golem — steal, then give it back.', 536, 322);
-
-    panel(ctx, 512, 340, 412, 236);
-    ctx.fillStyle = '#ffd76a';
-    ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.fillText('THE NINE ROOMS', 536, 368);
-    ctx.font = '12px system-ui, sans-serif';
-    for (let i = 0; i < 9; i += 1) {
-      const y = 390 + i * 17;
-      ctx.fillStyle = '#ffd76a';
-      ctx.fillText(`${i + 1}. ${ROOMS[i].name.toUpperCase()}`, 536, y);
-      ctx.fillStyle = '#aeb4d4';
-      ctx.fillText(`— ${ROOM_LINES[i]}`, 536 + 168, y);
-    }
-    ctx.fillStyle = '#f2e8d8';
-    ctx.font = 'bold 12px system-ui, sans-serif';
-    ctx.fillText('E STEAL  ·  Q GIVE — ONE GAUGE, FOUR BODIES.', 536, 556);
-  }
-  return { buttons };
-}
-
-export function drawCodex(ctx, x, y, w) {
-  const rows = [
-    ['0 · FEATHER', 'Floats on a breath. Huge jumps, tossed by gales, rides updrafts. Cannot push.'],
-    ['1 · BALANCED', 'The travelling weight. Steady jumps, some wind resistance. The default.'],
-    ['2 · HEAVY', 'Pushes crates, holds switches down, stands firm in a gale. Shorter jumps.'],
-    ['3 · ANCHOR', 'Ignores wind. Smashes cracked floors on a hard landing. Barely jumps.'],
-  ];
-  let ry = y;
-  ctx.textAlign = 'left';
-  for (let i = 0; i < 4; i += 1) {
-    ctx.fillStyle = WEIGHTS[i].colour;
-    ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.fillText(rows[i][0], x, ry + 14);
-    ctx.fillStyle = '#aeb4d4';
-    ctx.font = '12px system-ui, sans-serif';
-    wrapText(ctx, rows[i][1], x, ry + 30, w, 15);
-    ry += 52;
-  }
-  const rules = [
-    'E steals 1 weight from the nearest crate, boulder or golem.',
-    'Q gives 1 weight back — to a crate, a boulder, or a live mine.',
-    'A golem with nothing left pops. A fed mine fizzles harmlessly.',
-    'Switches open gates when the resting weight on them reaches 2.',
-    'Chain transfers within 3 seconds to raise the score multiplier.',
-    'Stars: clear the room · take every orb · beat par with no damage.',
-  ];
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 13px system-ui, sans-serif';
-  ctx.fillText('THE RULES OF THE TRADE', x, ry + 16);
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = '12px system-ui, sans-serif';
-  let ly = ry + 34;
-  for (const rule of rules) {
-    ctx.fillText('·  ' + rule, x, ly);
-    ly += 19;
-  }
-  return ly;
-}
-
-function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-  const words = text.split(' ');
-  let line = '';
-  let yy = y;
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      ctx.fillText(line, x, yy);
-      line = word;
-      yy += lineHeight;
-    } else {
-      line = test;
-    }
-  }
-  ctx.fillText(line, x, yy);
-}
-
-export function drawPause(ctx, opts) {
-  const { mouse } = opts;
-  ctx.fillStyle = 'rgba(8, 10, 20, 0.62)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 240, 48, 480, 504);
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 30px system-ui, sans-serif';
-  ctx.fillText('PAUSED', 268, 92);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('The vault waits. The weight does not.', 268, 112);
-  drawCodex(ctx, 268, 128, 424);
-  const buttons = [];
-  const resumeRect = { x: 268, y: 452, w: 424, h: 40 };
-  button(ctx, resumeRect, 'RESUME  (P)', mouse, true);
-  buttons.push({ id: 'resume', ...resumeRect });
-  const retryRect = { x: 268, y: 500, w: 204, h: 34 };
-  button(ctx, retryRect, 'RETRY ROOM  (R)', mouse, false);
-  buttons.push({ id: 'retry', ...retryRect });
-  const titleRect = { x: 484, y: 500, w: 208, h: 34 };
-  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
-  buttons.push({ id: 'title', ...titleRect });
-  return { buttons };
-}
-
-export function drawClear(ctx, opts) {
-  const { room, stars, breakdown, t, mouse, isLast } = opts;
-  ctx.fillStyle = 'rgba(8, 10, 20, 0.55)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 260, 84, 440, 432);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#57e6a8';
-  ctx.font = 'bold 32px system-ui, sans-serif';
-  ctx.fillText('ROOM CLEAR!', FIELD.width / 2, 134);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText(`ROOM ${room.index + 1} · ${room.name.toUpperCase()}`, FIELD.width / 2, 156);
-  // Stars stamp in one by one.
-  for (let i = 0; i < 3; i += 1) {
-    const reveal = t > 0.35 + i * 0.3;
-    const earned = i < stars;
-    const scale = reveal ? 1 + Math.max(0, 0.4 - (t - 0.35 - i * 0.3) * 1.4) : 0.6;
-    const sx = FIELD.width / 2 + (i - 1) * 76;
-    ctx.save();
-    ctx.translate(sx, 196);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = reveal ? 1 : 0.25;
-    drawStar(ctx, 0, 0, 26, earned ? '#ffd76a' : '#3a4170');
-    ctx.restore();
-  }
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillStyle = '#aeb4d4';
-  ctx.fillText('CLEAR', FIELD.width / 2 - 76, 236);
-  ctx.fillText('ALL ORBS', FIELD.width / 2, 236);
-  ctx.fillText('PAR + CLEAN', FIELD.width / 2 + 76, 236);
-  // Breakdown.
-  const rows = [
-    ['Room score', breakdown.roomScore],
-    ['Time bonus', breakdown.timeBonus],
-    ['No-damage bonus', breakdown.noDamageBonus],
-    ['TOTAL SCORE', breakdown.totalScore],
-  ];
-  let ry = 268;
-  ctx.textAlign = 'left';
-  for (const [label, value] of rows) {
-    const isTotal = label === 'TOTAL SCORE';
-    ctx.fillStyle = isTotal ? '#ffd76a' : '#f2e8d8';
-    ctx.font = `${isTotal ? 'bold ' : ''}15px system-ui, sans-serif`;
-    ctx.fillText(label, 300, ry);
-    ctx.textAlign = 'right';
-    ctx.fillText(value.toLocaleString('en-US'), 660, ry);
-    ctx.textAlign = 'left';
-    ry += 28;
-  }
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(
-    `${breakdown.timeText}  ·  orbs ${breakdown.orbs}/2  ·  ${breakdown.damageTaken ? 'took damage' : 'no damage'}`,
-    FIELD.width / 2,
-    ry + 4,
-  );
-  const buttons = [];
-  const nextRect = { x: 300, y: 424, w: 360, h: 44 };
-  button(ctx, nextRect, isLast ? 'OPEN THE VAULT' : 'NEXT ROOM  →', mouse, true);
-  buttons.push({ id: 'next', ...nextRect });
-  const retryRect = { x: 300, y: 476, w: 172, h: 32 };
-  button(ctx, retryRect, 'REPLAY ROOM', mouse, false);
-  buttons.push({ id: 'replay', ...retryRect });
-  const titleRect = { x: 488, y: 476, w: 172, h: 32 };
-  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
-  buttons.push({ id: 'title', ...titleRect });
-  return { buttons };
-}
-
-function drawStar(ctx, x, y, r, colour) {
-  ctx.fillStyle = colour;
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
   ctx.beginPath();
   for (let i = 0; i < 10; i += 1) {
-    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+    const ang = -Math.PI / 2 + (i * Math.PI) / 5;
     const rad = i % 2 === 0 ? r : r * 0.45;
-    const px = x + Math.cos(angle) * rad;
-    const py = y + Math.sin(angle) * rad;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
+    const x = Math.cos(ang) * rad;
+    const y = Math.sin(ang) * rad;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   }
   ctx.closePath();
+  ctx.fillStyle = filled ? PALETTE.gold : 'rgba(255, 255, 255, 0.18)';
   ctx.fill();
+  ctx.strokeStyle = filled ? '#8a6a14' : 'rgba(255, 255, 255, 0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
 }
 
-export function drawVictory(ctx, opts) {
-  const { totalScore, totalStars, totalTime, best, isNewBest, perRoom, mouse } = opts;
-  ctx.fillStyle = 'rgba(8, 10, 20, 0.72)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 220, 44, 520, 512);
+function button(ctx, x, y, w, h, label, opts = {}) {
+  const hover = opts.hover || false;
+  ctx.fillStyle = opts.primary ? (hover ? '#ffd94d' : PALETTE.gold) : hover ? 'rgba(60, 68, 110, 0.95)' : 'rgba(26, 32, 68, 0.95)';
+  roundRect(ctx, x, y, w, h, 9);
+  ctx.fill();
+  ctx.strokeStyle = opts.primary ? '#8a6a14' : 'rgba(106, 116, 168, 0.7)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = opts.primary ? PALETTE.ink : PALETTE.parchment;
+  ctx.font = `bold ${opts.small ? 14 : 17}px ${FONT}`;
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 34px system-ui, sans-serif';
-  ctx.fillText('THE VAULT IS OPEN', FIELD.width / 2, 96);
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = '14px system-ui, sans-serif';
-  ctx.fillText('Nine rooms. Every weight accounted for. Pip keeps the last one.', FIELD.width / 2, 120);
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 40px system-ui, sans-serif';
-  ctx.fillText(totalScore.toLocaleString('en-US'), FIELD.width / 2, 168);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText('FINAL SCORE', FIELD.width / 2, 188);
-  if (isNewBest) {
-    ctx.fillStyle = '#57e6a8';
-    ctx.font = 'bold 14px system-ui, sans-serif';
-    ctx.fillText('★ NEW BEST ★', FIELD.width / 2, 210);
-  } else {
-    ctx.fillText(`BEST ${best.toLocaleString('en-US')}`, FIELD.width / 2, 210);
-  }
-  // Per-room star table.
-  let ty = 240;
+  ctx.fillText(label, x + w / 2, y + h / 2 + (opts.small ? 5 : 6));
+  return { id: opts.id, x, y, w, h };
+}
+
+function dim(ctx, alpha = 0.62) {
+  ctx.fillStyle = `rgba(5, 7, 18, ${alpha})`;
+  ctx.fillRect(0, 0, VIEW.w, VIEW.h);
+}
+
+function panelBox(ctx, x, y, w, h) {
+  ctx.fillStyle = 'rgba(13, 17, 41, 0.96)';
+  roundRect(ctx, x, y, w, h, 14);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.goldDim;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+export function drawTitleDiorama(ctx, game, time) {
+  // The live room behind the title: room 3, staged mid-steal.
+  drawWorld(ctx, game.diorama, game.dioramaJuice, time);
+  drawJuiceWorld(ctx, game.dioramaJuice);
+  drawVignette(ctx);
+}
+
+export function drawTitle(ctx, game, time) {
+  drawTitleDiorama(ctx, game, time);
+  dim(ctx, 0.45);
+  const buttons = [];
+  const mouse = game.input.mouse;
+
+  // Left: logo + rules.
   ctx.textAlign = 'left';
-  ctx.font = '13px system-ui, sans-serif';
-  for (let i = 0; i < 9; i += 1) {
-    const y = ty + i * 22;
-    ctx.fillStyle = '#aeb4d4';
-    ctx.fillText(`${i + 1}. ${perRoom[i].name}`, 280, y);
-    ctx.textAlign = 'right';
-    for (let s = 0; s < 3; s += 1) {
-      drawStar(ctx, 640 + s * 20, y - 4, 7, s < perRoom[i].stars ? '#ffd76a' : '#3a4170');
-    }
-    ctx.fillStyle = '#f2e8d8';
-    ctx.fillText(perRoom[i].score.toLocaleString('en-US'), 620, y);
-    ctx.textAlign = 'left';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 68px ${FONT}`;
+  ctx.fillText('BALLAST', 44, 108);
+  ctx.fillStyle = PALETTE.cyan;
+  ctx.font = `bold 20px ${FONT}`;
+  ctx.fillText('A  W E I G H T - T H I E F ’ S  T A L E', 46, 136);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `15px ${FONT}`;
+  ctx.fillText('9 rooms  ·  27 stars  ·  6 seals  ·  4 weights  ·  1 vault', 46, 162);
+
+  const rules = [
+    ['GOAL', 'Open the vault: clear all 9 rooms and reach the last door.'],
+    ['STEAL', 'E takes weight from crates, boulders, golems and mines.'],
+    ['GIVE', 'Q returns weight. Heavy crates press plates; heavy boulders smash.'],
+    ['WIN', 'Reach the glowing door.'],
+    ['LOSE', 'Lose all 3 hearts in a room — the room resets.'],
+  ];
+  let ry = 196;
+  for (const [label, text] of rules) {
+    ctx.fillStyle = label === 'WIN' ? PALETTE.cyan : label === 'LOSE' ? PALETTE.danger : PALETTE.gold;
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.fillText(label, 46, ry);
+    ctx.fillStyle = PALETTE.parchment;
+    ctx.font = `14px ${FONT}`;
+    ctx.fillText(text, 118, ry);
+    ry += 26;
   }
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '12px system-ui, sans-serif';
-  const mins = Math.floor(totalTime / 60);
-  const secs = Math.floor(totalTime % 60);
-  ctx.fillText(
-    `STARS ${totalStars}/27   ·   TIME ${mins}:${String(secs).padStart(2, '0')}   ·   NEXT GOAL: ${totalStars < 27 ? 'replay a room for its missing stars' : 'a perfect vault — every star earned'}`,
-    FIELD.width / 2,
-    452,
-  );
-  const buttons = [];
-  const againRect = { x: 300, y: 472, w: 360, h: 44 };
-  button(ctx, againRect, 'PLAY AGAIN', mouse, true);
-  buttons.push({ id: 'again', ...againRect });
-  const titleRect = { x: 300, y: 524, w: 360, h: 28 };
-  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
-  buttons.push({ id: 'title', ...titleRect });
-  return { buttons };
+
+  // The four weight states, drawn with the real player renderer.
+  ctx.fillStyle = 'rgba(7, 10, 24, 0.8)';
+  roundRect(ctx, 44, 336, 470, 116, 10);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(106, 116, 168, 0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('THE FOUR WEIGHTS — YOUR BODY CHANGES WITH THE GAUGE', 58, 358);
+  for (let g = 0; g < 4; g += 1) {
+    const px = 84 + g * 118;
+    const fake = {
+      x: px - 15, y: 372, w: 30, h: 42, gauge: g, facing: 1, vx: 0,
+      squashX: 1, squashY: 1, invuln: 0, onGround: true, hideTag: true,
+    };
+    drawPlayer(ctx, fake, time);
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.85)';
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(WEIGHT_NAMES[g], px, 442);
+  }
+
+  // Key chips.
+  ctx.textAlign = 'left';
+  ctx.font = `13px ${FONT}`;
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.8)';
+  ctx.fillText('← →  move      SPACE  jump      E  steal      Q  give      P  pause      M  mute', 46, 474);
+
+  // Right: room select + bests + start.
+  panelBox(ctx, 548, 40, 368, 520);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 16px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('CHOOSE A ROOM', 570, 70);
+  const totalStars = Object.values(game.save.stars).reduce((a, b) => a + b, 0);
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 14px ${FONT}`;
+  ctx.textAlign = 'right';
+  ctx.fillText(`★ ${totalStars}/27`, 894, 70);
+  for (let i = 0; i < 9; i += 1) {
+    const col = i % 3;
+    const row = Math.floor(i / 3);
+    const bx = 570 + col * 112;
+    const by = 84 + row * 86;
+    const unlocked = i < game.save.unlocked;
+    const stars = game.save.stars[i] || 0;
+    const hover = unlocked && mouse.x >= bx && mouse.x <= bx + 100 && mouse.y >= by && mouse.y <= by + 74;
+    ctx.fillStyle = unlocked ? (hover ? 'rgba(60, 68, 110, 0.95)' : 'rgba(26, 32, 68, 0.95)') : 'rgba(16, 20, 46, 0.9)';
+    roundRect(ctx, bx, by, 100, 74, 8);
+    ctx.fill();
+    ctx.strokeStyle = unlocked ? 'rgba(106, 116, 168, 0.7)' : 'rgba(106, 116, 168, 0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    if (unlocked) {
+      ctx.fillStyle = PALETTE.parchment;
+      ctx.font = `bold 15px ${FONT}`;
+      ctx.fillText(`${i + 1}`, bx + 50, by + 26);
+      ctx.font = `11px ${FONT}`;
+      ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+      ctx.fillText(LEVELS[i].name, bx + 50, by + 42);
+      for (let s = 0; s < 3; s += 1) drawStar(ctx, bx + 34 + s * 16, by + 58, 6, s < stars);
+      buttons.push({ id: `room:${i}`, x: bx, y: by, w: 100, h: 74 });
+    } else {
+      ctx.fillStyle = 'rgba(242, 231, 201, 0.4)';
+      ctx.font = '20px ' + FONT;
+      ctx.fillText('🔒', bx + 50, by + 34);
+      ctx.font = `11px ${FONT}`;
+      ctx.fillText('locked', bx + 50, by + 54);
+    }
+  }
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `14px ${FONT}`;
+  ctx.fillText(`BEST SCORE  ★ ${game.save.best}`, 570, 366);
+  ctx.fillText(`ROOMS OPEN  ${game.save.unlocked}/9`, 570, 388);
+  if (game.save.runs.length > 0) {
+    const last = game.save.runs[0];
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+    ctx.fillText(`LAST RUN  ★ ${last.score} · ${last.stars} stars`, 570, 410);
+  }
+
+  const startHover = mouse.x >= 570 && mouse.x <= 894 && mouse.y >= 430 && mouse.y <= 478;
+  buttons.push(button(ctx, 570, 430, 324, 48, '▶  START THE HEIST', { primary: true, hover: startHover, id: 'start' }));
+  const howHover = mouse.x >= 570 && mouse.x <= 894 && mouse.y >= 488 && mouse.y <= 522;
+  buttons.push(button(ctx, 570, 488, 324, 34, 'HOW TO PLAY', { hover: howHover, small: true, id: 'howto' }));
+  const muteHover = mouse.x >= 570 && mouse.x <= 894 && mouse.y >= 530 && mouse.y <= 552;
+  buttons.push(button(ctx, 570, 530, 324, 22, game.save.muted ? 'SOUND: OFF (M)' : 'SOUND: ON (M)', { hover: muteHover, small: true, id: 'mute' }));
+  return buttons;
 }
 
-export function drawFailed(ctx, opts) {
-  const { mouse, cause } = opts;
-  // Name the cause: a failure the player understands is a lesson, not a wall.
-  const causeLine =
-    cause === 'golem'
-      ? 'A golem caught you — steal its weight first.'
-      : cause === 'mine'
-        ? 'A live mine caught you — feed it weight first.'
-        : cause === 'pit'
-          ? 'The pit took a heart. Mind the gaps.'
-          : 'The vault resets the room. The weight resets too.';
-  ctx.fillStyle = 'rgba(8, 10, 20, 0.55)';
-  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-  panel(ctx, 300, 208, 360, 184);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ff6b5e';
-  ctx.font = 'bold 26px system-ui, sans-serif';
-  ctx.fillText('OUT OF HEARTS', FIELD.width / 2, 252);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText(causeLine, FIELD.width / 2, 278);
+export function drawPause(ctx, game) {
+  dim(ctx, 0.7);
+  panelBox(ctx, 230, 90, 500, 420);
   const buttons = [];
-  const retryRect = { x: 340, y: 300, w: 280, h: 42 };
-  button(ctx, retryRect, 'TRY AGAIN  (R)', mouse, true);
-  buttons.push({ id: 'retry', ...retryRect });
-  const titleRect = { x: 340, y: 350, w: 280, h: 30 };
-  button(ctx, titleRect, 'TITLE SCREEN', mouse, false);
-  buttons.push({ id: 'title', ...titleRect });
-  return { buttons };
+  const mouse = game.input.mouse;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 34px ${FONT}`;
+  ctx.fillText('PAUSED', 480, 140);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 14px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('WEIGHT CODEX', 260, 176);
+  for (let g = 0; g < 4; g += 1) {
+    const y = 196 + g * 26;
+    ctx.fillStyle = PALETTE.cyan;
+    ctx.font = `bold 13px ${FONT}`;
+    ctx.fillText(`${g} · ${WEIGHT_NAMES[g]}`, 260, y);
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.8)';
+    ctx.font = `13px ${FONT}`;
+    ctx.fillText(WEIGHT_EFFECTS[g], 390, y);
+  }
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 14px ${FONT}`;
+  ctx.fillText('CONTROLS', 260, 322);
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.8)';
+  ctx.font = `13px ${FONT}`;
+  ctx.fillText('← → / A D move · SPACE / W jump · E steal · Q give', 260, 344);
+  ctx.fillText('Mouse: left-click steal · right-click give · R retry room', 260, 364);
+  ctx.fillText('M mute · P / ESC resume', 260, 384);
+  const mk = (y, label, id, primary) => {
+    const hover = mouse.x >= 260 && mouse.x <= 700 && mouse.y >= y && mouse.y <= y + 34;
+    buttons.push(button(ctx, 260, y, 440, 34, label, { hover, small: true, id, primary }));
+  };
+  mk(402, 'RESUME', 'resume', true);
+  mk(442, 'RESTART ROOM', 'restart', false);
+  // Second row of small buttons.
+  const muteHover = mouse.x >= 260 && mouse.x <= 470 && mouse.y >= 482 && mouse.y <= 506;
+  buttons.push(button(ctx, 260, 482, 210, 24, game.save.muted ? 'SOUND: OFF' : 'SOUND: ON', { hover: muteHover, small: true, id: 'mute' }));
+  const titleHover = mouse.x >= 490 && mouse.x <= 700 && mouse.y >= 482 && mouse.y <= 506;
+  buttons.push(button(ctx, 490, 482, 210, 24, 'TITLE SCREEN', { hover: titleHover, small: true, id: 'title' }));
+  return buttons;
 }
 
-export { SCORE };
+export function drawClear(ctx, game, t) {
+  dim(ctx, 0.55);
+  panelBox(ctx, 280, 110, 400, 380);
+  const buttons = [];
+  const mouse = game.input.mouse;
+  const clear = game.clearState;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 30px ${FONT}`;
+  ctx.fillText('ROOM CLEAR!', 480, 158);
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.8)';
+  ctx.font = `14px ${FONT}`;
+  ctx.fillText(`${game.world.level.name} · ${clear.timeText}`, 480, 182);
+  // Stars pop in one by one.
+  for (let s = 0; s < 3; s += 1) {
+    const local = t - 0.25 - s * 0.28;
+    const scale = local <= 0 ? 0 : local < 0.18 ? local / 0.18 : 1 + Math.max(0, 0.25 - (local - 0.18)) * 0.6;
+    drawStar(ctx, 408 + s * 72, 226, 26, s < clear.stars, Math.max(0.01, scale));
+  }
+  ctx.textAlign = 'left';
+  ctx.font = `15px ${FONT}`;
+  const lines = [
+    ['Orbs & takedowns', clear.earnedText],
+    ['Clear bonus', `+${clear.clearBonus}`],
+    ['Time bonus', `+${clear.timeBonus}`],
+    ['Room total', `★ ${clear.roomScore}`],
+  ];
+  lines.forEach(([label, value], i) => {
+    const y = 284 + i * 26;
+    ctx.fillStyle = i === 3 ? PALETTE.gold : PALETTE.parchment;
+    ctx.font = i === 3 ? `bold 16px ${FONT}` : `15px ${FONT}`;
+    ctx.fillText(label, 320, y);
+    ctx.textAlign = 'right';
+    ctx.fillText(value, 640, y);
+    ctx.textAlign = 'left';
+  });
+  const nextLabel = game.world.levelIndex === 8 ? 'SEE THE VAULT →' : (game.world.levelIndex === 2 || game.world.levelIndex === 5) ? 'CHOOSE A SEAL →' : 'NEXT ROOM →';
+  const nextHover = mouse.x >= 320 && mouse.x <= 640 && mouse.y >= 396 && mouse.y <= 436;
+  buttons.push(button(ctx, 320, 396, 320, 40, nextLabel, { primary: true, hover: nextHover, id: 'next' }));
+  const replayHover = mouse.x >= 320 && mouse.x <= 640 && mouse.y >= 446 && mouse.y <= 474;
+  buttons.push(button(ctx, 320, 446, 320, 28, 'REPLAY ROOM', { hover: replayHover, small: true, id: 'replay' }));
+  return buttons;
+}
+
+export function drawSeals(ctx, game) {
+  dim(ctx, 0.72);
+  const buttons = [];
+  const mouse = game.input.mouse;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.cyan;
+  ctx.font = `bold 30px ${FONT}`;
+  ctx.fillText('THE VAULT OFFERS A SEAL', 480, 108);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `15px ${FONT}`;
+  ctx.fillText('Choose one. It lasts for the whole run. Click a card or press 1, 2 or 3.', 480, 134);
+  const options = game.sealChoice;
+  options.forEach((seal, i) => {
+    const x = 150 + i * 230;
+    const y = 170;
+    const hover = mouse.x >= x && mouse.x <= x + 200 && mouse.y >= y && mouse.y <= y + 280;
+    ctx.fillStyle = hover ? 'rgba(38, 46, 88, 0.98)' : 'rgba(19, 24, 52, 0.98)';
+    roundRect(ctx, x, y, 200, 280, 12);
+    ctx.fill();
+    ctx.strokeStyle = hover ? PALETTE.gold : 'rgba(106, 116, 168, 0.7)';
+    ctx.lineWidth = hover ? 3 : 2;
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.cyan;
+    ctx.font = '44px ' + FONT;
+    ctx.fillText(seal.icon, x + 100, y + 66);
+    ctx.fillStyle = PALETTE.gold;
+    ctx.font = `bold 18px ${FONT}`;
+    ctx.fillText(seal.name, x + 100, y + 102);
+    // Wrapped blurb.
+    ctx.fillStyle = PALETTE.parchment;
+    ctx.font = `14px ${FONT}`;
+    const words = seal.blurb.split(' ');
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width > 168 && line) { lines.push(line); line = word; }
+      else line = test;
+    }
+    if (line) lines.push(line);
+    lines.forEach((ln, li) => ctx.fillText(ln, x + 100, y + 132 + li * 20));
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.6)';
+    ctx.font = `bold 13px ${FONT}`;
+    ctx.fillText(`PRESS ${i + 1}`, x + 100, y + 258);
+    buttons.push({ id: `seal:${i}`, x, y, w: 200, h: 280 });
+  });
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+  ctx.font = `13px ${FONT}`;
+  ctx.fillText(`Run score ★ ${game.run.score} · ${game.run.starsTotal} stars so far`, 480, 486);
+  return buttons;
+}
+
+function gradeFor(stars) {
+  if (stars >= 27) return 'S';
+  if (stars >= 24) return 'A';
+  if (stars >= 18) return 'B';
+  return 'C';
+}
+
+function nextGoalText(run) {
+  if (run.starsTotal < 27) return `NEXT GOAL: ${27 - run.starsTotal} more star${27 - run.starsTotal === 1 ? '' : 's'} — grab every orb and beat every par.`;
+  if (run.score < run.best) return 'NEXT GOAL: beat your best score with longer combos.';
+  return 'NEXT GOAL: the vault is yours. Defend the crown.';
+}
+
+export function drawVictory(ctx, game) {
+  dim(ctx, 0.6);
+  panelBox(ctx, 110, 36, 740, 528);
+  const buttons = [];
+  const mouse = game.input.mouse;
+  const run = game.run;
+  const grade = gradeFor(run.starsTotal);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 34px ${FONT}`;
+  ctx.fillText('THE VAULT OPENS', 480, 96);
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.8)';
+  ctx.font = `14px ${FONT}`;
+  ctx.fillText('Pip the weight-thief walks out heavier with gold — and lighter with pride.', 480, 120);
+
+  // Grade letter.
+  ctx.fillStyle = 'rgba(7, 10, 24, 0.8)';
+  roundRect(ctx, 150, 140, 110, 110, 12);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.gold;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 72px ${FONT}`;
+  ctx.fillText(grade, 205, 222);
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+  ctx.fillText('GRADE', 205, 242);
+
+  // Score block.
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold 30px ${FONT}`;
+  ctx.fillText(`★ ${run.score}`, 284, 176);
+  if (run.score >= run.best && run.score > 0) {
+    ctx.fillStyle = PALETTE.cyan;
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.fillText('★ NEW BEST ★', 284, 200);
+  }
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `15px ${FONT}`;
+  ctx.fillText(`${run.starsTotal}/27 stars · ${run.timeText} · best combo ×${run.bestCombo}`, 284, 226);
+
+  // Per-room star table.
+  ctx.fillStyle = 'rgba(7, 10, 24, 0.8)';
+  roundRect(ctx, 150, 268, 660, 74, 10);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+  ctx.font = `bold 11px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('ROOM STARS', 164, 286);
+  for (let i = 0; i < 9; i += 1) {
+    const cx = 200 + i * 68;
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.6)';
+    ctx.font = `11px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${i + 1}`, cx, 302);
+    const stars = run.roomStars[i] || 0;
+    for (let s = 0; s < 3; s += 1) drawStar(ctx, cx - 14 + s * 14, 322, 6, s < stars);
+  }
+
+  // Stats grid.
+  const stats = [
+    ['Transfers', run.transfers],
+    ['Golems popped', run.pops],
+    ['Mines disarmed', run.disarms],
+    ['Smashes', run.smashes],
+    ['Orbs', `${run.orbsTaken}/18`],
+    ['Seals', run.sealsTaken],
+  ];
+  stats.forEach(([label, value], i) => {
+    const col = i % 3;
+    const row = Math.floor(i / 3);
+    const x = 150 + col * 226;
+    const y = 356 + row * 40;
+    ctx.fillStyle = 'rgba(7, 10, 24, 0.8)';
+    roundRect(ctx, x, y, 212, 32, 8);
+    ctx.fill();
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.75)';
+    ctx.font = `13px ${FONT}`;
+    ctx.fillText(label, x + 12, y + 21);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.fillText(String(value), x + 200, y + 21);
+  });
+
+  // Run history (left) + next goal (right, two lines).
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.fillText('RECENT RUNS', 150, 452);
+  ctx.font = `13px ${FONT}`;
+  game.save.runs.slice(0, 3).forEach((r, i) => {
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.75)';
+    ctx.fillText(`★ ${r.score} · ${r.stars} stars · ${r.time}`, 150, 470 + i * 18);
+  });
+  const goalParts = nextGoalText(run).split(' — ');
+  ctx.fillStyle = PALETTE.cyan;
+  ctx.font = `bold 13px ${FONT}`;
+  ctx.fillText(goalParts[0], 480, 466);
+  if (goalParts[1]) {
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.85)';
+    ctx.font = `13px ${FONT}`;
+    ctx.fillText(goalParts[1], 480, 486);
+  }
+
+  const againHover = mouse.x >= 280 && mouse.x <= 470 && mouse.y >= 514 && mouse.y <= 552;
+  buttons.push(button(ctx, 280, 514, 190, 38, 'PLAY AGAIN', { primary: true, hover: againHover, id: 'again' }));
+  const titleHover = mouse.x >= 490 && mouse.x <= 680 && mouse.y >= 514 && mouse.y <= 552;
+  buttons.push(button(ctx, 490, 514, 190, 38, 'TITLE SCREEN', { hover: titleHover, id: 'title' }));
+  return buttons;
+}
+
+export function drawFailed(ctx, game) {
+  dim(ctx, 0.68);
+  panelBox(ctx, 280, 150, 400, 300);
+  const buttons = [];
+  const mouse = game.input.mouse;
+  const causeText = {
+    golem: 'A golem caught you.',
+    mine: 'A mine exploded.',
+    pit: 'You fell into the dark.',
+  }[game.world.failCause] || 'The vault wins this round.';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.danger;
+  ctx.font = `bold 28px ${FONT}`;
+  ctx.fillText('THE VAULT HOLDS', 480, 204);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `16px ${FONT}`;
+  ctx.fillText(causeText, 480, 234);
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.75)';
+  ctx.font = `14px ${FONT}`;
+  ctx.fillText(`Room ${game.world.levelIndex + 1} · ${game.world.level.name} — all 3 hearts lost.`, 480, 260);
+  ctx.fillText('The room resets. Your run score is kept.', 480, 282);
+  const retryHover = mouse.x >= 320 && mouse.x <= 640 && mouse.y >= 312 && mouse.y <= 352;
+  buttons.push(button(ctx, 320, 312, 320, 40, 'RETRY ROOM', { primary: true, hover: retryHover, id: 'retry' }));
+  const titleHover = mouse.x >= 320 && mouse.x <= 640 && mouse.y >= 364 && mouse.y <= 392;
+  buttons.push(button(ctx, 320, 364, 320, 28, 'TITLE SCREEN', { hover: titleHover, small: true, id: 'title' }));
+  return buttons;
+}
+
+export function drawHowto(ctx, game) {
+  dim(ctx, 0.75);
+  panelBox(ctx, 220, 80, 520, 440);
+  const buttons = [];
+  const mouse = game.input.mouse;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 28px ${FONT}`;
+  ctx.fillText('HOW TO PLAY', 480, 126);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 14px ${FONT}`;
+  ctx.fillText('THE IDEA', 250, 158);
+  ctx.font = `14px ${FONT}`;
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.85)';
+  ctx.fillText('You are Pip, a thief who steals weight itself. E pulls weight', 250, 180);
+  ctx.fillText('out of the world into your gauge; Q puts it back. Your body', 250, 200);
+  ctx.fillText('changes with the gauge — and so does what the world lets you do.', 250, 220);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 14px ${FONT}`;
+  ctx.fillText('THE FOUR WEIGHTS', 250, 252);
+  for (let g = 0; g < 4; g += 1) {
+    const y = 274 + g * 24;
+    ctx.fillStyle = PALETTE.cyan;
+    ctx.font = `bold 13px ${FONT}`;
+    ctx.fillText(`${g} · ${WEIGHT_NAMES[g]}`, 250, y);
+    ctx.fillStyle = 'rgba(242, 231, 201, 0.85)';
+    ctx.font = `13px ${FONT}`;
+    ctx.fillText(WEIGHT_EFFECTS[g], 370, y);
+  }
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 14px ${FONT}`;
+  ctx.fillText('SCORING', 250, 388);
+  ctx.font = `13px ${FONT}`;
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.85)';
+  ctx.fillText('Orbs +100 · golem pops +150 · mine disarms +100 · smashes +150.', 250, 408);
+  ctx.fillText('Chain scoring events within 3 seconds for ×2 and ×3 combos.', 250, 428);
+  ctx.fillText('Each room: 3 stars — clear, both orbs, beat par time.', 250, 448);
+  const backHover = mouse.x >= 350 && mouse.x <= 610 && mouse.y >= 466 && mouse.y <= 500;
+  buttons.push(button(ctx, 350, 466, 260, 34, 'BACK', { primary: true, hover: backHover, small: true, id: 'back' }));
+  void game;
+  return buttons;
+}
+
+export { SEALS };

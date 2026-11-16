@@ -1,160 +1,142 @@
-// Every tuning number and colour in one place. The playfield is a fixed 960x600
-// logical area; the renderer scales it to the window, so no rule below depends
-// on the screen size. Rooms are single-screen: 24 by 15 tiles of 40 pixels.
+// BALLAST tuning: every number the simulation and the feel layer share.
+// Physics first (rooms are tuned around these apexes), presentation second.
+// Jump apexes at gravity 2400: FEATHER ~160px + slow fall, BALANCED ~168px,
+// HEAVY ~133px, ANCHOR ~91px. Room steps never exceed 64px except routes
+// the updraft or a full FEATHER jump serves.
 
-export const FIELD = { width: 960, height: 600, tile: 40, cols: 24, rows: 15 };
-
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
+export const VIEW = { w: 960, h: 600 };
 export const STEP = 1 / 60;
 
-export const PLAYER = {
-  width: 30,
-  height: 44,
-  /** Reach of a steal or a give, in pixels, from the player's centre. */
-  range: 150,
-  /** Seconds between transfers. */
-  transferCooldown: 0.22,
-  /** Seconds a jump still works after leaving ground. */
-  coyote: 0.09,
-  /** Seconds a jump pressed early is remembered. */
+export const PHYSICS = {
+  gravity: 2400,
+  // Per gauge: 0 FEATHER, 1 BALANCED, 2 HEAVY, 3 ANCHOR.
+  jumpVel: [880, 900, 800, 660],
+  fallCap: [240, 780, 840, 980],
+  fallGravityScale: [0.5, 1.0, 1.05, 1.2],
+  riseGravityScale: [1.0, 1.0, 1.0, 1.1],
+  moveSpeed: [250, 300, 265, 215],
+  groundAccel: 3200,
+  airAccel: 2200,
+  groundFriction: 2600,
+  coyoteTime: 0.09,
   jumpBuffer: 0.12,
-  /** Seconds of mercy after taking a hit. */
-  invulnerable: 1.3,
-  /** Knockback on taking a hit. */
-  hurtKnockX: 260,
-  hurtKnockY: -320,
+  jumpCut: 0.5,
+  playerW: 30,
+  playerH: 42,
 };
 
-/**
- * The four weight states. Stealing raises the gauge, giving lowers it. Each
- * state is a different way of moving through the same room: light floats and
- * jumps high but the wind owns it; anchor barely jumps but nothing moves it,
- * it pushes crates, holds switches and smashes cracked floors.
- */
-export const WEIGHTS = [
+export const WEIGHT = {
+  maxGauge: 3,
+  stealRange: 170,
+  longTetherRange: 240,
+  golemPopScore: 150,
+  mineDisarmScore: 100,
+  orbScore: 100,
+  smashScore: 150,
+  roomClearScore: 500,
+  comboWindow: 3.0,
+  quickHandsWindow: 4.5,
+  comboCap: 3,
+  heartsPerRoom: 3,
+  invulnTime: 1.2,
+  mineArmRadius: 110,
+  golemAlertRadius: 150,
+  golemSpeed: 55,
+  boulderBreakDelay: 0.35,
+  anchorSmashFallSpeed: 500,
+};
+
+export const FEEL = {
+  shakeDecay: 2.6,
+  shakeMax: 14,
+  hitStopPop: 0.05,
+  hitStopExplosion: 0.06,
+  hitStopSmash: 0.09,
+  traumaPop: 0.45,
+  traumaExplosion: 0.7,
+  traumaSmash: 0.8,
+  traumaLand: 0.25,
+  traumaSteal: 0.12,
+};
+
+// Dark saturated vault: deep indigo walls, gold light, cyan weight-energy,
+// magenta danger. Characters must read in greyscale: light bodies on dark
+// walls, dark outlines, one reserved colour per meaning.
+export const PALETTE = {
+  sky0: '#0b0f26',
+  sky1: '#141a3d',
+  wall: '#232a52',
+  wallDark: '#1a2044',
+  wallEdge: '#3b4474',
+  stone: '#4a5280',
+  stoneDark: '#333a5e',
+  stoneEdge: '#828bb8',
+  floor: '#2c3358',
+  floorEdge: '#565f96',
+  gold: '#f5c542',
+  goldDim: '#c99a2e',
+  cyan: '#4de3e0',
+  cyanDim: '#2a9a98',
+  magenta: '#f4517e',
+  danger: '#ff5a4e',
+  parchment: '#f2e7c9',
+  ink: '#10142e',
+  pip: ['#bdf3f2', '#ffb35c', '#ff8a3d', '#e2583e'],
+  pipDark: ['#7fc4c2', '#d98a3a', '#c95f24', '#a83a28'],
+  golem: '#a3a9d4',
+  golemDark: '#6e759e',
+  crate: '#a8763e',
+  crateDark: '#7d5627',
+  boulder: '#7a7f9e',
+  boulderDark: '#565b78',
+  orb: '#ffd94d',
+};
+
+export const WEIGHT_NAMES = ['FEATHER', 'BALANCED', 'HEAVY', 'ANCHOR'];
+export const WEIGHT_EFFECTS = [
+  'Floats · rides updrafts · blown by gales',
+  'Balanced · steady jumps',
+  'Pushes crates · holds switches',
+  'Smashes cracked floors · ignores wind',
+];
+
+export const SEALS = [
   {
-    name: 'FEATHER',
-    gauge: 0,
-    speed: 235,
-    gravity: 880,
-    jump: -565,
-    maxFall: 165,
-    wind: 1.0,
-    updraft: 1.0,
-    push: false,
-    smash: false,
-    colour: '#9fe8ff',
-    glow: '#bdf3ff',
-    verb: 'Floats · huge jump · wind tosses you',
+    id: 'heart',
+    name: 'Heart Seal',
+    icon: '♥',
+    blurb: '+1 max heart, and heal 1 now. Room attempts get roomier.',
   },
   {
-    name: 'BALANCED',
-    gauge: 1,
-    speed: 255,
-    gravity: 1500,
-    jump: -645,
-    maxFall: 540,
-    wind: 0.55,
-    updraft: 0.35,
-    push: false,
-    smash: false,
-    colour: '#ffd76a',
-    glow: '#ffe9a8',
-    verb: 'Steady · standard jump',
+    id: 'tether',
+    name: 'Long Tether',
+    icon: '⇄',
+    blurb: 'Steal and give reach 40% farther. Pop golems from safety.',
   },
   {
-    name: 'HEAVY',
-    gauge: 2,
-    speed: 225,
-    gravity: 1950,
-    jump: -590,
-    maxFall: 660,
-    wind: 0.25,
-    updraft: 0.0,
-    push: true,
-    smash: false,
-    colour: '#ff9a4d',
-    glow: '#ffc08a',
-    verb: 'Pushes crates · holds switches',
+    id: 'echo',
+    name: 'Echo Smash',
+    icon: '◎',
+    blurb: 'Smashing a cracked floor sends a shockwave that pops golems and disarms mines nearby.',
   },
   {
-    name: 'ANCHOR',
-    gauge: 3,
-    speed: 175,
-    gravity: 2450,
-    jump: -490,
-    maxFall: 800,
-    wind: 0.0,
-    updraft: 0.0,
-    push: true,
-    smash: true,
-    colour: '#ff6b5e',
-    glow: '#ffa89e',
-    verb: 'Smashes cracked floors · ignores wind',
+    id: 'lungs',
+    name: 'Feather Lungs',
+    icon: '🪶',
+    blurb: 'Feather falls slower and updrafts lift harder. The sky is a road.',
+  },
+  {
+    id: 'hands',
+    name: 'Quick Hands',
+    icon: '✦',
+    blurb: 'Combo window grows from 3s to 4.5s. Chains are easier to keep.',
+  },
+  {
+    id: 'skin',
+    name: 'Stone Skin',
+    icon: '⬡',
+    blurb: 'The first hit in every room is ignored. One free mistake per room.',
   },
 ];
 
-export const HEARTS_PER_ROOM = 3;
-
-/** Score values. Orb and hazard scores are multiplied by the combo. */
-export const SCORE = {
-  orb: 100,
-  golemPop: 150,
-  mineFizzle: 150,
-  roomClear: 500,
-  timeBonusPerSecond: 20,
-  noDamageBonus: 300,
-  /** Seconds between transfers before the combo chain breaks. */
-  comboWindow: 3.0,
-  comboMax: 3,
-};
-
-/** Fall speed a weight-3 landing needs to smash a cracked floor. */
-export const SMASH_MIN_FALL = 420;
-
-export const GOLEM = { width: 34, height: 42, speed: 62, weight: 1 };
-export const CRATE = { size: 38 };
-export const BOULDER = { size: 40 };
-export const MINE = { size: 30, armRadius: 170 };
-export const ORB = { radius: 11 };
-
-export const PALETTE = {
-  // v4: a sunlit vault. The v3 indigo read as empty dark space in a still
-  // frame; warm sandstone walls, bright stone floors and a pale sky make
-  // every platform, entity and beam read at a glance, like the bright
-  // frames that top the leaderboard. Dark HUD panels keep their contrast
-  // on top of the light playfield.
-  skyTop: '#f6e7bd',
-  skyMid: '#eed9a0',
-  skyBottom: '#dcbd7d',
-  farArch: '#cfa96b',
-  midArch: '#dbbf85',
-  ground: '#8a6a45',
-  groundTop: '#e0b96a',
-  groundEdge: '#5a4026',
-  platform: '#a8814e',
-  platformTop: '#e8c887',
-  cracked: '#9a6a42',
-  crackedEdge: '#e0aa6a',
-  text: '#241a10',
-  muted: '#6a5a3a',
-  gold: '#b8860b',
-  panel: 'rgba(20, 16, 8, 0.84)',
-  panelEdge: '#ffd76a',
-  door: '#2f8f66',
-  doorGlow: '#a8f5d2',
-  gale: 'rgba(46, 130, 180, 0.22)',
-  updraft: 'rgba(184, 134, 11, 0.28)',
-  danger: '#d92b1f',
-  switchOff: '#8a7a5a',
-  switchOn: '#2f8f66',
-  gate: '#8a6a45',
-  player: '#4b3f72',
-};
-
-export const FONT = '"Avenir Next", "Segoe UI", system-ui, sans-serif';
-export const FONT_DISPLAY = 'Georgia, "Times New Roman", serif';
-
-/** Where bests are kept between visits (this browser only). */
-export const BEST_KEY = 'ballast-v4.best';
-export const MUTE_KEY = 'ballast-v4.muted';
+export const STORAGE_KEY = 'ballast-v5-save';

@@ -1,182 +1,97 @@
-// Synthesized sound: every effect is built from oscillators and filtered noise,
-// no audio files. The context is created lazily on the first user gesture (the
-// browser's autoplay rule) and the ambient pad starts with it. M mutes.
+// Synthesized sound: every effect is a small WebAudio recipe, no assets.
+// The context starts lazily on the first user gesture; every call is
+// guarded so a missing or blocked AudioContext never breaks the game.
 
-import { MUTE_KEY } from './config.js';
+export function createAudio() {
+  let ctx = null;
+  let muted = false;
+  let master = null;
 
-let context = null;
-let master = null;
-let padNodes = null;
-let muted = false;
-
-try {
-  muted = localStorage.getItem(MUTE_KEY) === '1';
-} catch {
-  muted = false;
-}
-
-function ensure() {
-  if (context) {
-    if (context.state === 'suspended') context.resume();
-    return true;
-  }
-  try {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    context = new AudioContext();
-    master = context.createGain();
-    master.gain.value = muted ? 0 : 0.5;
-    master.connect(context.destination);
-    startPad();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function tone({ freq, endFreq, dur, type = 'sine', gain = 0.2, delay = 0 }) {
-  if (!ensure() || muted) return;
-  const t0 = context.currentTime + delay;
-  const osc = context.createOscillator();
-  const amp = context.createGain();
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, t0);
-  if (endFreq) osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), t0 + dur);
-  amp.gain.setValueAtTime(0.0001, t0);
-  amp.gain.exponentialRampToValueAtTime(gain, t0 + 0.012);
-  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(amp).connect(master);
-  osc.start(t0);
-  osc.stop(t0 + dur + 0.05);
-}
-
-function noise({ dur, gain = 0.2, filterFreq = 800, type = 'lowpass', delay = 0 }) {
-  if (!ensure() || muted) return;
-  const t0 = context.currentTime + delay;
-  const length = Math.max(1, Math.floor(context.sampleRate * dur));
-  const buffer = context.createBuffer(1, length, context.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
-  const source = context.createBufferSource();
-  source.buffer = buffer;
-  const filter = context.createBiquadFilter();
-  filter.type = type;
-  filter.frequency.value = filterFreq;
-  const amp = context.createGain();
-  amp.gain.setValueAtTime(gain, t0);
-  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  source.connect(filter).connect(amp).connect(master);
-  source.start(t0);
-}
-
-function startPad() {
-  if (padNodes) return;
-  const amp = context.createGain();
-  amp.gain.value = 0.035;
-  const filter = context.createBiquadFilter();
-  filter.type = 'lowpass';
-  filter.frequency.value = 420;
-  const oscA = context.createOscillator();
-  oscA.type = 'sine';
-  oscA.frequency.value = 110;
-  const oscB = context.createOscillator();
-  oscB.type = 'sine';
-  oscB.frequency.value = 164.8;
-  const lfo = context.createOscillator();
-  lfo.frequency.value = 0.07;
-  const lfoAmp = context.createGain();
-  lfoAmp.gain.value = 0.015;
-  lfo.connect(lfoAmp).connect(amp.gain);
-  oscA.connect(filter);
-  oscB.connect(filter);
-  filter.connect(amp).connect(master);
-  oscA.start();
-  oscB.start();
-  lfo.start();
-  padNodes = { oscA, oscB, lfo };
-}
-
-export const sfx = {
-  unlock() {
-    ensure();
-  },
-  isMuted() {
-    return muted;
-  },
-  toggleMute() {
-    muted = !muted;
+  function ensure() {
+    if (ctx) {
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      return ctx;
+    }
     try {
-      localStorage.setItem(MUTE_KEY, muted ? '1' : '0');
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.5;
+      master.connect(ctx.destination);
     } catch {
-      /* storage unavailable: mute still applies this visit */
+      ctx = null;
     }
-    if (master) master.gain.value = muted ? 0 : 0.5;
-    return muted;
-  },
-  jump() {
-    tone({ freq: 280, endFreq: 520, dur: 0.12, type: 'triangle', gain: 0.12 });
-  },
-  land(hard) {
-    if (hard) {
-      tone({ freq: 120, endFreq: 55, dur: 0.14, type: 'sine', gain: 0.22 });
-      noise({ dur: 0.1, gain: 0.1, filterFreq: 500 });
-    } else {
-      tone({ freq: 160, endFreq: 90, dur: 0.07, type: 'sine', gain: 0.07 });
-    }
-  },
-  steal() {
-    tone({ freq: 520, endFreq: 1040, dur: 0.16, type: 'sine', gain: 0.16 });
-    tone({ freq: 780, endFreq: 1560, dur: 0.14, type: 'sine', gain: 0.1, delay: 0.05 });
-  },
-  give() {
-    tone({ freq: 420, endFreq: 180, dur: 0.16, type: 'triangle', gain: 0.16 });
-    tone({ freq: 210, endFreq: 110, dur: 0.14, type: 'sine', gain: 0.12, delay: 0.04 });
-  },
-  denied() {
-    tone({ freq: 160, endFreq: 120, dur: 0.09, type: 'square', gain: 0.06 });
-  },
-  orb() {
-    tone({ freq: 880, dur: 0.1, type: 'sine', gain: 0.14 });
-    tone({ freq: 1320, dur: 0.14, type: 'sine', gain: 0.12, delay: 0.06 });
-  },
-  pop() {
-    noise({ dur: 0.16, gain: 0.2, filterFreq: 1800, type: 'bandpass' });
-    tone({ freq: 340, endFreq: 60, dur: 0.18, type: 'square', gain: 0.12 });
-  },
-  fizzle() {
-    noise({ dur: 0.3, gain: 0.14, filterFreq: 3200, type: 'highpass' });
-    tone({ freq: 900, endFreq: 300, dur: 0.22, type: 'sine', gain: 0.08 });
-  },
-  smash() {
-    tone({ freq: 90, endFreq: 38, dur: 0.3, type: 'sine', gain: 0.3 });
-    noise({ dur: 0.24, gain: 0.24, filterFreq: 700 });
-  },
-  hurt() {
-    tone({ freq: 220, endFreq: 90, dur: 0.22, type: 'sawtooth', gain: 0.14 });
-  },
-  switchOn() {
-    tone({ freq: 440, dur: 0.1, type: 'triangle', gain: 0.14 });
-    tone({ freq: 660, dur: 0.16, type: 'triangle', gain: 0.14, delay: 0.08 });
-  },
-  door() {
-    [523, 659, 784, 1047].forEach((freq, i) =>
-      tone({ freq, dur: 0.16, type: 'triangle', gain: 0.13, delay: i * 0.07 }),
-    );
-  },
-  clear() {
-    [392, 523, 659, 784].forEach((freq, i) =>
-      tone({ freq, dur: 0.2, type: 'triangle', gain: 0.14, delay: i * 0.09 }),
-    );
-  },
-  win() {
-    [523, 587, 659, 784, 880, 1047, 1319].forEach((freq, i) =>
-      tone({ freq, dur: 0.26, type: 'triangle', gain: 0.13, delay: i * 0.11 }),
-    );
-  },
-  click() {
-    tone({ freq: 700, dur: 0.05, type: 'sine', gain: 0.08 });
-  },
-  star() {
-    tone({ freq: 1047, dur: 0.12, type: 'sine', gain: 0.15 });
-    tone({ freq: 1568, dur: 0.2, type: 'sine', gain: 0.13, delay: 0.07 });
-  },
-};
+    return ctx;
+  }
+
+  function tone(freqA, freqB, dur, type, vol, delay = 0) {
+    if (muted) return;
+    const c = ensure();
+    if (!c || !master) return;
+    try {
+      const t0 = c.currentTime + delay;
+      const osc = c.createOscillator();
+      const gain = c.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freqA, t0);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqB), t0 + dur);
+      gain.gain.setValueAtTime(vol, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+    } catch { /* sound is decoration; never fail the game */ }
+  }
+
+  function noise(dur, vol, lowpass, delay = 0) {
+    if (muted) return;
+    const c = ensure();
+    if (!c || !master) return;
+    try {
+      const t0 = c.currentTime + delay;
+      const len = Math.max(1, Math.floor(c.sampleRate * dur));
+      const buffer = c.createBuffer(1, len, c.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < len; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = c.createBufferSource();
+      src.buffer = buffer;
+      const filter = c.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = lowpass;
+      const gain = c.createGain();
+      gain.gain.setValueAtTime(vol, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(master);
+      src.start(t0);
+    } catch { /* sound is decoration; never fail the game */ }
+  }
+
+  return {
+    unlock() { ensure(); },
+    setMuted(value) { muted = value; },
+    isMuted() { return muted; },
+    jump() { tone(280, 520, 0.12, 'sine', 0.22); },
+    land() { tone(140, 70, 0.08, 'triangle', 0.25); noise(0.06, 0.12, 500); },
+    hardLand() { tone(110, 50, 0.14, 'triangle', 0.4); noise(0.1, 0.22, 400); },
+    steal() { tone(520, 980, 0.14, 'sawtooth', 0.14); tone(780, 1560, 0.12, 'sine', 0.12, 0.03); },
+    give() { tone(880, 420, 0.14, 'sawtooth', 0.14); tone(620, 310, 0.12, 'sine', 0.12, 0.03); },
+    pop() { noise(0.12, 0.3, 2400); tone(600, 180, 0.12, 'square', 0.16); },
+    smash() { tone(90, 38, 0.22, 'triangle', 0.5); noise(0.18, 0.3, 320); },
+    explosion() { noise(0.35, 0.4, 900); tone(160, 40, 0.3, 'sawtooth', 0.25); },
+    orb() { tone(880, 880, 0.07, 'sine', 0.2); tone(1320, 1320, 0.1, 'sine', 0.2, 0.06); },
+    disarm() { tone(700, 990, 0.1, 'sine', 0.18); tone(990, 700, 0.12, 'sine', 0.14, 0.08); },
+    gate() { tone(180, 320, 0.25, 'triangle', 0.25); noise(0.2, 0.1, 700, 0.05); },
+    clear() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.14, 'triangle', 0.22, i * 0.09)); },
+    victory() { [392, 523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f, 0.2, 'triangle', 0.22, i * 0.11)); },
+    fail() { [330, 262, 196, 147].forEach((f, i) => tone(f, f * 0.9, 0.16, 'sawtooth', 0.12, i * 0.12)); },
+    hurt() { tone(220, 90, 0.18, 'sawtooth', 0.25); noise(0.1, 0.2, 800); },
+    ui() { tone(660, 660, 0.05, 'sine', 0.14); },
+    seal() { [523, 784, 1047].forEach((f, i) => tone(f, f, 0.16, 'sine', 0.2, i * 0.07)); },
+    tick() { tone(980, 980, 0.04, 'square', 0.08); },
+    beep() { tone(1240, 1240, 0.05, 'square', 0.06); },
+  };
+}

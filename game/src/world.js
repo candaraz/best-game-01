@@ -1,563 +1,620 @@
-// The simulation: one fixed-step world per room. The player, crates, boulders,
-// golems, mines, switches, gates and wind zones all live here; the renderer only
-// draws what this file computes, and the juice layer only reacts to the events
-// it reports. Nothing here reads the clock or the network, so a scripted input
-// tape always replays the same room.
+// The simulation: movement, weight transfer, hazards, switches, gates,
+// doors, combo and scoring. Presentation lives in juice.js/render.js and
+// never feeds back into this file — juice cannot change an outcome.
 
-import {
-  FIELD,
-  PLAYER,
-  WEIGHTS,
-  HEARTS_PER_ROOM,
-  SCORE,
-  SMASH_MIN_FALL,
-  GOLEM,
-  STEP,
-} from './config.js';
-import { parseRoom } from './levels.js';
-import { ACT_GIVE, ACT_JUMP, ACT_STEAL } from './input.js';
+import { PHYSICS, WEIGHT } from './config.js';
+import { LEVELS } from './levels.js';
 
-function overlaps(a, b) {
+function overlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-function centreX(b) {
-  return b.x + b.w / 2;
+function center(e) {
+  return { x: e.x + e.w / 2, y: e.y + e.h / 2 };
 }
 
-function centreY(b) {
-  return b.y + b.h / 2;
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-export function createWorld(roomDef, roomIndex) {
-  const parts = parseRoom(roomDef);
-  const events = [];
-  const state = {
-    roomIndex,
-    def: roomDef,
+export function createWorld(levelIndex, seals) {
+  const level = LEVELS[levelIndex];
+  const has = (id) => seals.has(id);
+  const maxHearts = WEIGHT.heartsPerRoom + (has('heart') ? 1 : 0);
+  const world = {
+    level,
+    levelIndex,
+    seals,
     time: 0,
-    cleared: false,
-    failed: false,
-    failCause: null,
-    orbsTaken: 0,
-    damageTaken: false,
-    score: 0,
+    roomTime: 0,
+    player: {
+      x: level.spawn[0], y: level.spawn[1],
+      w: PHYSICS.playerW, h: PHYSICS.playerH,
+      vx: 0, vy: 0, gauge: level.startGauge,
+      hearts: maxHearts, maxHearts,
+      facing: 1, onGround: false, coyote: 0, buffer: 0,
+      invuln: 0, squashX: 1, squashY: 1, jumpHeldPrev: false,
+      skinUsed: false, inUpdraft: false, inGale: 0,
+    },
+    crates: level.crates.map((c) => ({
+      x: c.x, y: c.y, w: 36, h: 36, vx: 0, vy: 0, weight: c.weight,
+      home: { x: c.x, y: c.y, weight: c.weight }, flash: 0, onGround: false,
+    })),
+    boulders: level.boulders.map((b) => ({
+      x: b.x, y: b.y, w: 40, h: 40, vy: 0, weight: b.weight,
+      home: { x: b.x, y: b.y, weight: b.weight }, flash: 0, onGround: false,
+      breakTimer: 0,
+    })),
+    golems: level.golems.map((g) => ({
+      x: g.x, y: g.y, w: 52, h: 56, dir: 1, weight: 1,
+      minX: g.minX, maxX: g.maxX, alive: true, alert: 0, flash: 0,
+      home: { x: g.x, y: g.y },
+    })),
+    mines: level.mines.map((m, i) => ({
+      x: m.x, y: m.y, w: 30, h: 30, baseY: m.y, weight: 1, armed: true,
+      phase: i * 1.7, near: 0, flash: 0,
+      home: { x: m.x, y: m.y },
+    })),
+    orbs: level.orbs.map(([x, y], i) => ({ x: x - 9, y: y - 9, w: 18, h: 18, taken: false, phase: i * 2.1 })),
+    switches: level.switches.map((s) => ({ x: s.x, y: s.y, w: 44, h: 10, id: s.id, latched: false, pressed: false })),
+    gates: level.gates.map((g) => ({ x: g.x, y: g.y, w: g.w, h: g.h, condition: g.condition, open: false, openAnim: 0 })),
+    cracked: level.cracked.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h, id: c.id, broken: false })),
+    doorOpen: false,
+    roomScore: 0,
     combo: 0,
     comboTimer: 0,
-    gateOpen: 0,
-    switchWasActive: false,
-    player: {
-      x: parts.spawn.x - PLAYER.width / 2,
-      y: parts.spawn.y - PLAYER.height,
-      w: PLAYER.width,
-      h: PLAYER.height,
-      vx: 0,
-      vy: 0,
-      gauge: 1,
-      hearts: HEARTS_PER_ROOM,
-      facing: 1,
-      onGround: false,
-      coyote: 0,
-      jumpBuffer: 0,
-      invuln: 0,
-      cooldown: 0,
-      squash: 0,
-      stretch: 0,
-      runPhase: 0,
-      wasGrounded: false,
-      fallPeak: 0,
-      prevJumpHeld: false,
-    },
-    solids: parts.solids,
-    oneWay: parts.oneWay,
-    cracked: parts.cracked,
-    gates: parts.gates,
-    orbs: parts.orbs,
-    crates: parts.crates.map((c) => ({ ...c, vx: 0, vy: 0, grounded: false })),
-    boulders: parts.boulders.map((b) => ({ ...b, vx: 0, vy: 0, grounded: false })),
-    golems: parts.golems.map((g) => ({ ...g, vx: 0, vy: 0, grounded: false })),
-    mines: parts.mines,
-    switches: parts.switches,
-    door: { x: roomDef.door.x - 18, y: roomDef.door.y - 64, w: 36, h: 64 },
-    zones: roomDef.zones,
-    spawn: parts.spawn,
+    cleared: false,
+    failed: false,
+    failCause: '',
+    clearBonus: 0,
+    timeBonus: 0,
+    stats: { transfers: 0, pops: 0, disarms: 0, smashes: 0, orbsTaken: 0, bestCombo: 0 },
+    events: [],
+    stealTarget: null,
+    giveTarget: null,
   };
+  updateDoor(world);
+  return world;
+}
 
-  function emit(type, data = {}) {
-    events.push({ type, ...data });
+function solidRects(world) {
+  const rects = world.level.solids.map(([x, y, w, h]) => ({ x, y, w, h }));
+  for (const c of world.cracked) if (!c.broken) rects.push(c);
+  for (const g of world.gates) if (!g.open) rects.push(g);
+  return rects;
+}
+
+function stealRange(world) {
+  return world.seals.has('tether') ? WEIGHT.longTetherRange : WEIGHT.stealRange;
+}
+
+function comboWindow(world) {
+  return world.seals.has('hands') ? WEIGHT.quickHandsWindow : WEIGHT.comboWindow;
+}
+
+function scoreEvent(world, base, x, y, kind) {
+  world.combo = Math.min(world.combo + 1, WEIGHT.comboCap);
+  world.comboTimer = comboWindow(world);
+  world.stats.bestCombo = Math.max(world.stats.bestCombo, world.combo);
+  const gained = base * Math.max(1, world.combo);
+  world.roomScore += gained;
+  world.events.push({ type: 'score', kind, x, y, gained, combo: world.combo });
+}
+
+export function nearestStealTarget(world) {
+  const p = world.player;
+  if (p.gauge >= WEIGHT.maxGauge) return null;
+  const pc = center(p);
+  const range = stealRange(world);
+  let best = null;
+  let bestD = range;
+  const consider = (obj, kind) => {
+    const d = dist(pc, center(obj));
+    if (d <= bestD) { bestD = d; best = { kind, obj }; }
+  };
+  for (const g of world.golems) if (g.alive && g.weight > 0) consider(g, 'golem');
+  for (const m of world.mines) if (m.armed && m.weight > 0) consider(m, 'mine');
+  for (const c of world.crates) if (c.weight > 0) consider(c, 'crate');
+  for (const b of world.boulders) if (b.weight > 0) consider(b, 'boulder');
+  return best;
+}
+
+export function nearestGiveTarget(world) {
+  const p = world.player;
+  if (p.gauge <= 0) return null;
+  const pc = center(p);
+  const range = stealRange(world);
+  let best = null;
+  let bestD = range;
+  const consider = (obj, kind) => {
+    const d = dist(pc, center(obj));
+    if (d <= bestD) { bestD = d; best = { kind, obj }; }
+  };
+  for (const c of world.crates) if (c.weight < 2) consider(c, 'crate');
+  for (const b of world.boulders) if (b.weight < 2) consider(b, 'boulder');
+  return best;
+}
+
+function doSteal(world) {
+  const target = nearestStealTarget(world);
+  if (!target) return;
+  const p = world.player;
+  const tc = center(target.obj);
+  p.gauge += 1;
+  target.obj.weight -= 1;
+  target.obj.flash = 0.25;
+  world.stats.transfers += 1;
+  world.events.push({ type: 'steal', x: p.x + p.w / 2, y: p.y + p.h / 2, tx: tc.x, ty: tc.y });
+  if (target.kind === 'golem' && target.obj.weight <= 0) {
+    target.obj.alive = false;
+    world.stats.pops += 1;
+    scoreEvent(world, WEIGHT.golemPopScore, tc.x, tc.y, 'pop');
+    world.events.push({ type: 'pop', x: tc.x, y: tc.y });
+  } else if (target.kind === 'mine' && target.obj.weight <= 0) {
+    target.obj.armed = false;
+    world.stats.disarms += 1;
+    scoreEvent(world, WEIGHT.mineDisarmScore, tc.x, tc.y, 'disarm');
+    world.events.push({ type: 'disarm', x: tc.x, y: tc.y });
   }
+  updateDoor(world);
+}
 
-  function solidAt(x, y, w, h, ignoreCracked) {
-    const box = { x, y, w, h };
-    for (const s of state.solids) if (overlaps(box, s)) return s;
-    if (state.gateOpen < 0.6) {
-      for (const g of state.gates) if (overlaps(box, g)) return g;
-    }
-    if (!ignoreCracked) {
-      for (const c of state.cracked) if (!c.broken && overlaps(box, c)) return c;
-    }
-    return null;
-  }
+function doGive(world) {
+  const target = nearestGiveTarget(world);
+  if (!target) return;
+  const p = world.player;
+  const tc = center(target.obj);
+  p.gauge -= 1;
+  target.obj.weight += 1;
+  target.obj.flash = 0.25;
+  world.stats.transfers += 1;
+  world.events.push({ type: 'give', x: p.x + p.w / 2, y: p.y + p.h / 2, tx: tc.x, ty: tc.y });
+  updateDoor(world);
+}
 
-  function moveBody(body, dt, isPlayer) {
-    // Horizontal: move, then push out of solids.
-    body.x += body.vx * dt;
-    if (body.x < 0) {
-      body.x = 0;
-      body.vx = 0;
-    }
-    if (body.x + body.w > FIELD.width) {
-      body.x = FIELD.width - body.w;
-      body.vx = 0;
-    }
-    const hitX = solidAt(body.x, body.y + 1, body.w, body.h - 2, false);
-    if (hitX) {
-      if (body.vx > 0) body.x = hitX.x - body.w;
-      else if (body.vx < 0) body.x = hitX.x + hitX.w;
-      body.vx = 0;
-    }
-    // Vertical: move, then land on solids or one-way platforms.
-    const prevBottom = body.y + body.h;
-    body.y += body.vy * dt;
-    body.grounded = false;
-    if (body.vy >= 0) {
-      const hitY = solidAt(body.x + 1, body.y, body.w - 2, body.h, false);
-      if (hitY) {
-        body.y = hitY.y - body.h;
-        body.vy = 0;
-        body.grounded = true;
-      } else {
-        for (const p of state.oneWay) {
-          if (
-            prevBottom <= p.y + 1 &&
-            body.y + body.h >= p.y &&
-            body.x + body.w > p.x + 2 &&
-            body.x < p.x + p.w - 2
-          ) {
-            body.y = p.y - body.h;
-            body.vy = 0;
-            body.grounded = true;
-            break;
-          }
-        }
-      }
-    } else {
-      const hitHead = solidAt(body.x + 1, body.y, body.w - 2, body.h, false);
-      if (hitHead) {
-        body.y = hitHead.y + hitHead.h;
-        body.vy = 0;
+function breakCracked(world, slab, byPlayer) {
+  if (slab.broken) return;
+  slab.broken = true;
+  world.stats.smashes += 1;
+  const cx = slab.x + slab.w / 2;
+  const cy = slab.y + slab.h / 2;
+  scoreEvent(world, WEIGHT.smashScore, cx, cy, 'smash');
+  world.events.push({ type: 'smash', x: cx, y: cy, byPlayer });
+  if (world.seals.has('echo')) {
+    for (const g of world.golems) {
+      if (g.alive && dist({ x: cx, y: cy }, center(g)) <= 130) {
+        g.alive = false;
+        world.stats.pops += 1;
+        scoreEvent(world, WEIGHT.golemPopScore, g.x + 26, g.y + 28, 'pop');
+        world.events.push({ type: 'pop', x: g.x + 26, y: g.y + 28 });
       }
     }
-    if (body.y < 0) {
-      body.y = 0;
-      body.vy = Math.max(0, body.vy);
-    }
-    return body.grounded;
-  }
-
-  function weightState() {
-    return WEIGHTS[state.player.gauge];
-  }
-
-  function nearestTarget(kind) {
-    const p = state.player;
-    const px = centreX(p);
-    const py = centreY(p);
-    let best = null;
-    let bestDist = PLAYER.range;
-    const consider = (obj, objKind) => {
-      const dx = centreX(obj) - px;
-      const dy = centreY(obj) - py;
-      const dist = Math.hypot(dx, dy);
-      if (dist <= bestDist) {
-        bestDist = dist;
-        best = { obj, kind: objKind, dist };
-      }
-    };
-    if (kind === 'steal') {
-      for (const c of state.crates) if (c.weight > 0) consider(c, 'crate');
-      for (const b of state.boulders) if (b.weight > 0) consider(b, 'boulder');
-      for (const g of state.golems) if (g.alive) consider(g, 'golem');
-    } else {
-      for (const c of state.crates) if (c.weight < c.maxWeight) consider(c, 'crate');
-      for (const b of state.boulders) if (b.weight < b.maxWeight) consider(b, 'boulder');
-      for (const m of state.mines) if (m.armed) consider(m, 'mine');
-    }
-    return best;
-  }
-
-  function chainUp() {
-    state.combo = Math.min(state.combo + 1, SCORE.comboMax);
-    state.comboTimer = SCORE.comboWindow;
-  }
-
-  function trySteal() {
-    const p = state.player;
-    if (p.cooldown > 0) return;
-    const target = nearestTarget('steal');
-    if (!target) {
-      emit('denied', { x: centreX(p), y: p.y - 6, text: 'NO TARGET' });
-      return;
-    }
-    if (p.gauge >= 3) {
-      emit('denied', { x: centreX(p), y: p.y - 6, text: 'GAUGE FULL' });
-      return;
-    }
-    p.cooldown = PLAYER.transferCooldown;
-    target.obj.weight -= 1;
-    p.gauge += 1;
-    chainUp();
-    emit('steal', {
-      fromX: centreX(target.obj),
-      fromY: centreY(target.obj),
-      toX: centreX(p),
-      toY: centreY(p),
-      kind: target.kind,
-    });
-    if (target.kind === 'golem') {
-      target.obj.alive = false;
-      const gained = SCORE.golemPop * Math.max(1, state.combo);
-      state.score += gained;
-      emit('pop', { x: centreX(target.obj), y: centreY(target.obj), gained });
-    }
-    p.squash = 0.18;
-  }
-
-  function tryGive() {
-    const p = state.player;
-    if (p.cooldown > 0) return;
-    const target = nearestTarget('give');
-    if (!target) {
-      emit('denied', { x: centreX(p), y: p.y - 6, text: 'NO TARGET' });
-      return;
-    }
-    if (p.gauge <= 0) {
-      emit('denied', { x: centreX(p), y: p.y - 6, text: 'GAUGE EMPTY' });
-      return;
-    }
-    p.cooldown = PLAYER.transferCooldown;
-    target.obj.weight += 1;
-    p.gauge -= 1;
-    chainUp();
-    emit('give', {
-      fromX: centreX(p),
-      fromY: centreY(p),
-      toX: centreX(target.obj),
-      toY: centreY(target.obj),
-      kind: target.kind,
-    });
-    if (target.kind === 'mine') {
-      target.obj.armed = false;
-      const gained = SCORE.mineFizzle * Math.max(1, state.combo);
-      state.score += gained;
-      emit('fizzle', { x: centreX(target.obj), y: centreY(target.obj), gained });
-    }
-    p.stretch = 0.16;
-  }
-
-  function hurtPlayer(fromX, cause) {
-    const p = state.player;
-    if (p.invuln > 0 || state.cleared || state.failed) return;
-    p.hearts -= 1;
-    p.invuln = PLAYER.invulnerable;
-    state.damageTaken = true;
-    state.combo = 0;
-    const dir = centreX(p) < fromX ? -1 : 1;
-    p.vx = dir * PLAYER.hurtKnockX;
-    p.vy = PLAYER.hurtKnockY;
-    emit('hurt', { x: centreX(p), y: centreY(p) });
-    if (p.hearts <= 0) {
-      state.failed = true;
-      state.failCause = cause || 'golem';
-      emit('failed', {});
-    }
-  }
-
-  function respawnAfterPit() {
-    const p = state.player;
-    p.hearts -= 1;
-    state.damageTaken = true;
-    state.combo = 0;
-    emit('pit', { x: centreX(p), y: FIELD.height - 20 });
-    if (p.hearts <= 0) {
-      state.failed = true;
-      state.failCause = 'pit';
-      emit('failed', {});
-      return;
-    }
-    p.x = state.spawn.x - p.w / 2;
-    p.y = state.spawn.y - p.h;
-    p.vx = 0;
-    p.vy = 0;
-    p.invuln = PLAYER.invulnerable;
-  }
-
-  function breakCrackedUnder(body, fallSpeed) {
-    const feet = { x: body.x + 2, y: body.y + body.h - 4, w: body.w - 4, h: 6 };
-    let broke = false;
-    for (const c of state.cracked) {
-      if (!c.broken && overlaps(feet, c)) {
-        c.broken = true;
-        broke = true;
-        emit('smashTile', { x: c.x + c.w / 2, y: c.y + c.h / 2 });
-      }
-    }
-    if (broke) emit('smash', { x: centreX(body), y: body.y + body.h, fallSpeed });
-    return broke;
-  }
-
-  function updateSwitches() {
-    for (const s of state.switches) {
-      let load = 0;
-      const plate = { x: s.x - 2, y: s.y - 6, w: s.w + 4, h: s.h + 6 };
-      for (const c of state.crates) {
-        if (overlaps({ x: c.x, y: c.y + c.h - 4, w: c.w, h: 4 }, plate)) load += c.weight;
-      }
-      for (const b of state.boulders) {
-        if (overlaps({ x: b.x, y: b.y + b.h - 4, w: b.w, h: 4 }, plate)) load += b.weight;
-      }
-      const p = state.player;
-      if (overlaps({ x: p.x, y: p.y + p.h - 4, w: p.w, h: 4 }, plate)) load += p.gauge;
-      const active = load >= s.threshold;
-      if (active && !s.active) emit('switchOn', { x: s.x + s.w / 2, y: s.y });
-      s.active = active;
-    }
-    const anyActive = state.switches.some((s) => s.active);
-    if (anyActive !== state.switchWasActive) state.switchWasActive = anyActive;
-    const target = anyActive ? 1 : 0;
-    state.gateOpen += (target - state.gateOpen) * Math.min(1, STEP * 6);
-    if (Math.abs(target - state.gateOpen) < 0.02) state.gateOpen = target;
-  }
-
-  function step(dt, moveDir, jumpHeld, actions) {
-    const p = state.player;
-    if (state.cleared || state.failed) return;
-    state.time += dt;
-    state.stepCount = (state.stepCount || 0) + 1;
-    if (state.comboTimer > 0) {
-      state.comboTimer -= dt;
-      if (state.comboTimer <= 0) state.combo = 0;
-    }
-    p.cooldown = Math.max(0, p.cooldown - dt);
-    p.invuln = Math.max(0, p.invuln - dt);
-    p.squash = Math.max(0, p.squash - dt);
-    p.stretch = Math.max(0, p.stretch - dt);
-    const w = weightState();
-
-    if (moveDir !== 0) p.facing = moveDir;
-    const targetVx = moveDir * w.speed;
-    const accel = p.onGround ? 2600 : 1700;
-    p.vx += Math.max(-accel * dt, Math.min(accel * dt, targetVx - p.vx));
-
-    // Wind zones push the player; heavy states resist, anchor ignores.
-    for (const zone of state.zones) {
-      const cx = centreX(p);
-      const cy = centreY(p);
-      if (cx < zone.x || cx > zone.x + zone.w || cy < zone.y || cy > zone.y + zone.h) continue;
-      if (zone.kind === 'gale') {
-        p.vx += zone.dx * zone.strength * w.wind * dt;
-        if (state.stepCount % 2 === 0) emit('galeStreak', { zone });
-      } else if (zone.kind === 'updraft') {
-        p.vy -= zone.strength * w.updraft * dt;
-        // The shaft is an elevator, not a cannon: cap the rise so the player
-        // can steer out at corridor height instead of rocketing past it.
-        if (w.updraft > 0 && p.vy < -240) p.vy = -240;
-        if (state.stepCount % 3 === 0) emit('updraftMote', { zone });
-      }
-    }
-
-    p.vy += w.gravity * dt;
-    if (p.vy > w.maxFall) p.vy = w.maxFall;
-    // Releasing jump mid-rise halves the upward speed: a tap hops, a hold soars.
-    if (p.prevJumpHeld && !jumpHeld && p.vy < 0) p.vy *= 0.5;
-    p.prevJumpHeld = jumpHeld;
-
-    if (p.onGround) p.coyote = PLAYER.coyote;
-    else p.coyote = Math.max(0, p.coyote - dt);
-    if (actions & ACT_JUMP) p.jumpBuffer = PLAYER.jumpBuffer;
-    else p.jumpBuffer = Math.max(0, p.jumpBuffer - dt);
-    if (p.jumpBuffer > 0 && p.coyote > 0) {
-      p.vy = w.jump;
-      p.jumpBuffer = 0;
-      p.coyote = 0;
-      p.onGround = false;
-      p.stretch = 0.16;
-      emit('jump', { x: centreX(p), y: p.y + p.h });
-    }
-
-    if (actions & ACT_STEAL) trySteal();
-    if (actions & ACT_GIVE) tryGive();
-
-    const wasGrounded = p.onGround;
-    const fallBefore = p.vy;
-    const prevBottom = p.y + p.h;
-    const prevTop = p.y;
-    moveBody(p, dt, true);
-    p.onGround = p.grounded;
-    if (!wasGrounded && p.onGround) {
-      const hard = fallBefore > 520;
-      p.squash = hard ? 0.2 : 0.12;
-      emit('land', { x: centreX(p), y: p.y + p.h, hard, fallSpeed: fallBefore });
-      if (w.smash && fallBefore > SMASH_MIN_FALL) breakCrackedUnder(p, fallBefore);
-    }
-    if (p.onGround) p.runPhase += Math.abs(p.vx) * dt * 0.05;
-
-    // Crates and boulders: gravity, friction, pushing, separation.
-    const boxes = [...state.crates, ...state.boulders];
-    for (const box of boxes) {
-      box.vy += 1900 * dt;
-      if (box.vy > 800) box.vy = 800;
-      box.vx *= Math.max(0, 1 - 6 * dt);
-      const bFall = box.vy;
-      const wasBoxGrounded = box.grounded;
-      moveBody(box, dt, false);
-      if (!wasBoxGrounded && box.grounded && box.weight >= 3 && bFall > SMASH_MIN_FALL) {
-        breakCrackedUnder(box, bFall);
-      }
-      if (box.roll !== undefined) box.roll += box.vx * dt * 0.05;
-    }
-    // The player lands on boxes, bonks under them, or pushes them from the
-    // side. Landing uses the pre-step feet position, so a descent onto a
-    // crate top counts as landing even while the bodies overlap this step.
-    for (const box of boxes) {
-      if (!overlaps(p, box)) continue;
-      if (p.vy >= 0 && prevBottom <= box.y + 8) {
-        p.y = box.y - p.h;
-        p.vy = 0;
-        p.onGround = true;
-        p.grounded = true;
-        if (!wasGrounded) {
-          p.squash = 0.12;
-          emit('land', { x: centreX(p), y: p.y + p.h, hard: false, fallSpeed: fallBefore });
-        }
-        continue;
-      }
-      if (p.vy < 0 && prevTop >= box.y + box.h - 8) {
-        p.y = box.y + box.h;
-        p.vy = 0;
-        continue;
-      }
-      const beside = p.y + p.h > box.y + 8 && p.y < box.y + box.h - 8;
-      if (!beside) continue;
-      const canPush = p.onGround && (w.push || box.weight <= p.gauge);
-      if (!canPush) {
-        if (p.vx > 0) p.x = box.x - p.w;
-        else if (p.vx < 0) p.x = box.x + box.w;
-        continue;
-      }
-      const push = p.vx * dt;
-      const oldX = box.x;
-      box.x += push;
-      const blocked = solidAt(box.x, box.y + 1, box.w, box.h - 2, false);
-      if (blocked) {
-        box.x = oldX;
-        if (p.vx > 0) p.x = box.x - p.w;
-        else if (p.vx < 0) p.x = box.x + box.w;
-      } else {
-        box.vx = p.vx * 0.9;
-        // Feedback only: a throttled dust event while the box truly moves.
-        if (state.stepCount % 6 === 0) {
-          emit('push', { x: centreX(box), y: box.y + box.h, dir: p.vx > 0 ? 1 : -1 });
-        }
-        if (p.vx > 0) p.x = box.x - p.w;
-        else if (p.vx < 0) p.x = box.x + box.w;
-      }
-    }
-    for (let i = 0; i < boxes.length; i += 1) {
-      for (let j = i + 1; j < boxes.length; j += 1) {
-        const a = boxes[i];
-        const b = boxes[j];
-        if (!overlaps(a, b)) continue;
-        const overlap = Math.min(a.x + a.w - b.x, b.x + b.w - a.x);
-        if (overlap > 0) {
-          const dir = centreX(a) < centreX(b) ? -1 : 1;
-          a.x += (dir * overlap) / 2;
-          b.x -= (dir * overlap) / 2;
-        }
-      }
-    }
-
-    // Golems patrol until a wall or a ledge turns them.
-    for (const g of state.golems) {
-      if (!g.alive) continue;
-      g.vy += 1900 * dt;
-      if (g.vy > 800) g.vy = 800;
-      g.vx = g.dir * GOLEM.speed;
-      const aheadX = g.dir > 0 ? g.x + g.w + 4 : g.x - 4;
-      const groundAhead = solidAt(aheadX, g.y + g.h + 4, 4, 8, false) !== null;
-      const wallAhead = solidAt(g.dir > 0 ? g.x + g.w + 1 : g.x - 1, g.y + 4, 2, g.h - 8, false) !== null;
-      if (g.grounded && (!groundAhead || wallAhead)) g.dir *= -1;
-      moveBody(g, dt, false);
-      if (overlaps(p, g) && p.invuln <= 0) hurtPlayer(centreX(g), 'golem');
-    }
-
-    // Mines explode on touch while armed.
-    for (const m of state.mines) {
-      if (!m.armed) continue;
-      if (overlaps(p, { x: m.x - 2, y: m.y - 2, w: m.w + 4, h: m.h + 4 }) && p.invuln <= 0) {
+    for (const m of world.mines) {
+      if (m.armed && dist({ x: cx, y: cy }, center(m)) <= 130) {
         m.armed = false;
-        emit('explode', { x: centreX(m), y: centreY(m) });
-        hurtPlayer(centreX(m), 'mine');
+        world.stats.disarms += 1;
+        scoreEvent(world, WEIGHT.mineDisarmScore, m.x + 15, m.y + 15, 'disarm');
+        world.events.push({ type: 'disarm', x: m.x + 15, y: m.y + 15 });
       }
     }
+  }
+  updateDoor(world);
+}
 
-    // Orbs.
-    for (const orb of state.orbs) {
-      if (orb.taken) continue;
-      const dx = orb.x - centreX(p);
-      const dy = orb.y - centreY(p);
-      if (Math.hypot(dx, dy) < 44) {
-        orb.taken = true;
-        state.orbsTaken += 1;
-        const gained = SCORE.orb * Math.max(1, state.combo);
-        state.score += gained;
-        emit('orb', { x: orb.x, y: orb.y, gained });
-      }
+function updateDoor(world) {
+  const lock = world.level.doorLock;
+  const need = new Set(lock === 'none' ? [] : lock.split('+'));
+  let open = true;
+  if (need.has('golems')) open = open && world.golems.every((g) => !g.alive);
+  if (need.has('mines')) open = open && world.mines.every((m) => !m.armed);
+  if (need.has('switch')) open = open && world.switches.every((s) => s.latched);
+  if (need.has('slab')) open = open && world.cracked.some((c) => c.broken);
+  const was = world.doorOpen;
+  world.doorOpen = open;
+  if (open && !was) world.events.push({ type: 'doorOpen', x: world.level.door[0] + 22, y: world.level.door[1] + 32 });
+}
+
+export function doorRequirements(world) {
+  const lock = world.level.doorLock;
+  const need = new Set(lock === 'none' ? [] : lock.split('+'));
+  const reqs = [];
+  if (need.has('golems')) {
+    const left = world.golems.filter((g) => g.alive).length;
+    reqs.push({ label: `Pop golems ${world.golems.length - left}/${world.golems.length}`, done: left === 0 });
+  }
+  if (need.has('mines')) {
+    const left = world.mines.filter((m) => m.armed).length;
+    reqs.push({ label: `Disarm mines ${world.mines.length - left}/${world.mines.length}`, done: left === 0 });
+  }
+  if (need.has('switch')) {
+    reqs.push({ label: 'Press the plate', done: world.switches.every((s) => s.latched) });
+  }
+  if (need.has('slab')) {
+    reqs.push({ label: 'Break the cracked floor', done: world.cracked.some((c) => c.broken) });
+  }
+  if (reqs.length === 0) reqs.push({ label: 'Reach the door', done: false });
+  return reqs;
+}
+
+function hurtPlayer(world, cause) {
+  const p = world.player;
+  if (p.invuln > 0 || world.cleared || world.failed) return;
+  if (world.seals.has('skin') && !p.skinUsed) {
+    p.skinUsed = true;
+    p.invuln = WEIGHT.invulnTime;
+    world.events.push({ type: 'skin', x: p.x + p.w / 2, y: p.y + p.h / 2 });
+    return;
+  }
+  p.hearts -= 1;
+  world.combo = 0;
+  world.comboTimer = 0;
+  world.events.push({ type: 'hurt', x: p.x + p.w / 2, y: p.y + p.h / 2, cause });
+  if (p.hearts <= 0) {
+    world.failed = true;
+    world.failCause = cause;
+    world.events.push({ type: 'fail', cause });
+    return;
+  }
+  // Respawn: keep progress (orbs, latches, breaks, pops, disarms), restore
+  // everything else to its home so the room is always re-solvable.
+  p.x = world.level.spawn[0];
+  p.y = world.level.spawn[1];
+  p.vx = 0;
+  p.vy = 0;
+  p.gauge = world.level.startGauge;
+  p.invuln = WEIGHT.invulnTime;
+  for (const c of world.crates) { c.x = c.home.x; c.y = c.home.y; c.vx = 0; c.vy = 0; c.weight = c.home.weight; }
+  for (const b of world.boulders) { b.x = b.home.x; b.y = b.home.y; b.vy = 0; b.weight = b.home.weight; b.breakTimer = 0; }
+  for (const g of world.golems) if (g.alive) { g.x = g.home.x; g.y = g.home.y; g.dir = 1; }
+  for (const m of world.mines) if (m.armed) { m.x = m.home.x; m.y = m.home.y; m.baseY = m.home.y; }
+  world.events.push({ type: 'respawn', x: p.x + p.w / 2, y: p.y + p.h / 2 });
+}
+
+function clampX(entity, dir, rects) {
+  for (const r of rects) {
+    if (!overlap(entity, r)) continue;
+    if (dir > 0) entity.x = r.x - entity.w;
+    else if (dir < 0) entity.x = r.x + r.w;
+  }
+}
+
+function pushCrateChain(world, first, dx, solids) {
+  // Push a contiguous line of crates together: the chain moves as far as
+  // its leading crate can, so crates never jam into an impassable pile.
+  const dir = Math.sign(dx);
+  const chain = [first];
+  let grew = true;
+  while (grew) {
+    grew = false;
+    const lead = chain[chain.length - 1];
+    for (const o of world.crates) {
+      if (chain.includes(o)) continue;
+      const touching = dir > 0
+        ? o.x < lead.x + lead.w + 2 && o.x + o.w > lead.x + lead.w - 2
+        : o.x + o.w > lead.x - 2 && o.x < lead.x + 2;
+      const vertical = o.y < lead.y + lead.h && o.y + o.h > lead.y;
+      if (touching && vertical) { chain.push(o); grew = true; }
     }
+  }
+  const lead = chain[chain.length - 1];
+  let allowed = dx;
+  const probe = { x: lead.x + dx, y: lead.y, w: lead.w, h: lead.h };
+  for (const r of solids) {
+    if (!overlap(probe, r)) continue;
+    if (dir > 0) allowed = Math.min(allowed, r.x - lead.w - lead.x);
+    else allowed = Math.max(allowed, r.x + r.w - lead.x);
+  }
+  allowed = dir > 0 ? Math.max(0, allowed) : Math.min(0, allowed);
+  for (const crate of chain) crate.x += allowed;
+  return allowed;
+}
 
-    updateSwitches();
+function moveAxisY(entity, dy, rects) {
+  // Resolve only against surfaces the entity actually crossed this step:
+  // the floor and the walls overlap in the corners, and resolving against
+  // a wall top would teleport a landing entity to the ceiling.
+  const prevY = entity.y;
+  entity.y += dy;
+  let landed = null;
+  for (const r of rects) {
+    if (!overlap(entity, r)) continue;
+    if (dy > 0 && prevY + entity.h <= r.y + 0.5) { entity.y = r.y - entity.h; landed = r; }
+    else if (dy < 0 && prevY >= r.y + r.h - 0.5) { entity.y = r.y + r.h; }
+  }
+  return landed;
+}
 
-    // The door.
-    if (overlaps(p, state.door)) {
-      state.cleared = true;
-      emit('clear', { x: centreX(p), y: centreY(p) });
-    }
+export function stepWorld(world, input, dt) {
+  if (world.cleared || world.failed) return;
+  const p = world.player;
+  const level = world.level;
+  world.time += dt;
+  world.roomTime += dt;
+  if (p.invuln > 0) p.invuln -= dt;
+  if (world.comboTimer > 0) {
+    world.comboTimer -= dt;
+    if (world.comboTimer <= 0) world.combo = 0;
+  }
+  for (const c of world.crates) if (c.flash > 0) c.flash -= dt;
+  for (const b of world.boulders) if (b.flash > 0) b.flash -= dt;
+  for (const g of world.golems) if (g.flash > 0) g.flash -= dt;
+  for (const m of world.mines) if (m.flash > 0) m.flash -= dt;
+  p.squashX += (1 - p.squashX) * Math.min(1, dt * 14);
+  p.squashY += (1 - p.squashY) * Math.min(1, dt * 14);
 
-    // The pit.
-    if (p.y > FIELD.height + 30) respawnAfterPit();
+  const g = p.gauge;
+  const solids = solidRects(world);
+
+  // --- horizontal drive ---
+  const target = PHYSICS.moveSpeed[g] * input.axis;
+  const accel = p.onGround ? PHYSICS.groundAccel : PHYSICS.airAccel;
+  if (input.axis !== 0) {
+    p.facing = input.axis;
+    if (p.vx < target) p.vx = Math.min(target, p.vx + accel * dt);
+    else if (p.vx > target) p.vx = Math.max(target, p.vx - accel * dt);
+  } else if (p.onGround) {
+    const f = PHYSICS.groundFriction * dt;
+    p.vx = Math.abs(p.vx) <= f ? 0 : p.vx - Math.sign(p.vx) * f;
   }
 
-  return {
-    state,
-    step,
-    drainEvents() {
-      return events.splice(0, events.length);
-    },
-    /** The nearest steal and give targets, for the renderer's hint rings. */
-    targets() {
-      return { steal: nearestTarget('steal'), give: nearestTarget('give') };
-    },
-    snapshot() {
-      const p = state.player;
-      return {
-        room: state.roomIndex,
-        time: Math.round(state.time * 1000) / 1000,
-        cleared: state.cleared,
-        failed: state.failed,
-        score: state.score,
-        orbs: state.orbsTaken,
-        hearts: p.hearts,
-        gauge: p.gauge,
-        x: Math.round(p.x),
-        y: Math.round(p.y),
-        grounded: p.onGround,
-        combo: state.combo,
-        golemsAlive: state.golems.filter((g) => g.alive).length,
-        minesArmed: state.mines.filter((m) => m.armed).length,
-        crackedBroken: state.cracked.filter((c) => c.broken).length,
-        switchActive: state.switches.some((s) => s.active),
-        gateOpen: Math.round(state.gateOpen * 100) / 100,
-      };
-    },
-  };
+  // --- zones: gale push, updraft lift ---
+  p.inUpdraft = false;
+  p.inGale = 0;
+  const pc = center(p);
+  for (const zone of level.gales) {
+    if (pc.x >= zone.x && pc.x <= zone.x + zone.w && pc.y >= zone.y && pc.y <= zone.y + zone.h) {
+      const force = [520, 260, 110, 0][g];
+      p.vx += zone.dir * force * dt;
+      p.inGale = zone.dir;
+    }
+  }
+  let updraftLift = 0;
+  for (const zone of level.updrafts) {
+    if (pc.x >= zone.x && pc.x <= zone.x + zone.w && pc.y >= zone.y && pc.y <= zone.y + zone.h) {
+      p.inUpdraft = true;
+      updraftLift = g === 0 ? (world.seals.has('lungs') ? 3000 : 2600) : g === 1 ? 700 : 0;
+    }
+  }
+
+  // --- jumping: coyote + buffer + release-halves-rise ---
+  if (p.onGround) p.coyote = PHYSICS.coyoteTime;
+  else p.coyote -= dt;
+  if (input.jumpPressed) p.buffer = PHYSICS.jumpBuffer;
+  else p.buffer -= dt;
+  if (p.buffer > 0 && p.coyote > 0) {
+    p.vy = -PHYSICS.jumpVel[g];
+    p.onGround = false;
+    p.coyote = 0;
+    p.buffer = 0;
+    p.squashX = 0.78;
+    p.squashY = 1.24;
+    world.events.push({ type: 'jump', x: pc.x, y: p.y + p.h });
+  }
+  if (!input.jumpHeld && p.jumpHeldPrev && p.vy < 0) p.vy *= PHYSICS.jumpCut;
+  p.jumpHeldPrev = input.jumpHeld;
+
+  // --- gravity ---
+  const falling = p.vy > 0;
+  const scale = falling ? PHYSICS.fallGravityScale[g] : PHYSICS.riseGravityScale[g];
+  p.vy += PHYSICS.gravity * scale * dt;
+  if (updraftLift > 0) {
+    p.vy -= updraftLift * dt;
+    const riseCap = world.seals.has('lungs') ? -320 : -260;
+    if (g === 0 && p.vy < riseCap) p.vy = riseCap;
+  }
+  const cap = g === 0 && world.seals.has('lungs') ? 170 : PHYSICS.fallCap[g];
+  if (p.vy > cap) p.vy = cap;
+
+  // --- transfers ---
+  if (input.stealPressed) doSteal(world);
+  if (input.givePressed) doGive(world);
+  world.stealTarget = nearestStealTarget(world);
+  world.giveTarget = nearestGiveTarget(world);
+
+  // --- crates: gravity, friction, push-apart ---
+  const pushables = [...world.crates];
+  for (const c of world.crates) {
+    c.vy += PHYSICS.gravity * dt;
+    if (c.vy > 900) c.vy = 900;
+    c.x += c.vx * dt;
+    if (c.vx !== 0) clampX(c, Math.sign(c.vx), solids);
+    const landed = moveAxisY(c, c.vy * dt, solids);
+    c.onGround = landed !== null;
+    if (landed) c.vy = 0;
+    c.vx *= Math.max(0, 1 - dt * (c.onGround ? 10 : 1));
+    if (Math.abs(c.vx) < 4) c.vx = 0;
+  }
+  for (let i = 0; i < pushables.length; i += 1) {
+    for (let j = i + 1; j < pushables.length; j += 1) {
+      const a = pushables[i];
+      const b = pushables[j];
+      if (!overlap(a, b)) continue;
+      const push = ((a.x + a.w / 2) < (b.x + b.w / 2) ? -1 : 1) * ((a.w + b.w) / 2 - Math.abs(a.x + a.w / 2 - (b.x + b.w / 2)));
+      a.x += push / 2;
+      b.x -= push / 2;
+      clampX(a, Math.sign(push), solids);
+      clampX(b, -Math.sign(push), solids);
+    }
+  }
+
+  // --- boulders: gravity only, plus the weight-2 cracked-floor timer ---
+  for (const b of world.boulders) {
+    b.vy += PHYSICS.gravity * dt;
+    if (b.vy > 900) b.vy = 900;
+    const landed = moveAxisY(b, b.vy * dt, solids);
+    b.onGround = landed !== null;
+    if (landed) b.vy = 0;
+    let onCracked = null;
+    for (const slab of world.cracked) {
+      if (slab.broken) continue;
+      const resting = Math.abs(b.y + b.h - slab.y) < 4 && b.x + b.w > slab.x + 6 && b.x < slab.x + slab.w - 6;
+      if (resting) onCracked = slab;
+    }
+    if (onCracked && b.weight >= 2) {
+      b.breakTimer += dt;
+      if (b.breakTimer >= WEIGHT.boulderBreakDelay) breakCracked(world, onCracked, false);
+    } else {
+      b.breakTimer = 0;
+    }
+  }
+
+  // --- player X: solids, boulders, crates (push when HEAVY+) ---
+  // A rect the player stands on top of (or passes under) is not a wall:
+  // only collide sideways when the previous frame's body overlapped it
+  // vertically by more than a hair, or crate tops become sticky.
+  const dx = p.vx * dt;
+  const feetY = p.y + p.h;
+  const sideHit = (r) => !(feetY <= r.y + 0.5 || p.y >= r.y + r.h - 0.5);
+  p.x += dx;
+  for (const r of solids) {
+    if (!overlap(p, r) || !sideHit(r)) continue;
+    if (dx > 0) p.x = r.x - p.w;
+    else if (dx < 0) p.x = r.x + r.w;
+    p.vx = 0;
+  }
+  for (const b of world.boulders) {
+    if (!overlap(p, b) || !sideHit(b)) continue;
+    if (dx > 0) p.x = b.x - p.w;
+    else if (dx < 0) p.x = b.x + b.w;
+    p.vx = 0;
+  }
+  for (const c of world.crates) {
+    if (!overlap(p, c) || !sideHit(c)) continue;
+    if (g >= 2 && dx !== 0) {
+      // Push: the crate (and any chain behind it) moves with the player
+      // unless a wall stops it.
+      const dir = Math.sign(dx);
+      const moved = pushCrateChain(world, c, dx, solids);
+      p.x = dir > 0 ? c.x - p.w : c.x + c.w;
+      if (Math.abs(moved) < Math.abs(dx) - 0.01) p.vx = 0;
+      c.vx = dir * Math.abs(p.vx);
+    } else {
+      if (dx > 0) p.x = c.x - p.w;
+      else if (dx < 0) p.x = c.x + c.w;
+      p.vx = 0;
+    }
+  }
+
+  // --- player Y: solids, crates, boulders; landings break cracked floors ---
+  const vyBefore = p.vy;
+  const dy = p.vy * dt;
+  const prevY = p.y;
+  p.y += dy;
+  let landedOn = null;
+  const landTargets = [...solids, ...world.crates, ...world.boulders];
+  for (const r of landTargets) {
+    if (!overlap(p, r)) continue;
+    if (dy > 0 && prevY + p.h <= r.y + 0.5) {
+      p.y = r.y - p.h;
+      if (!landedOn) landedOn = r;
+    } else if (dy < 0 && prevY >= r.y + r.h - 0.5) {
+      p.y = r.y + r.h;
+      p.vy = 0;
+    }
+  }
+  const wasGround = p.onGround;
+  p.onGround = landedOn !== null;
+  if (landedOn) {
+    const impact = vyBefore;
+    p.vy = 0;
+    if (!wasGround) {
+      const slab = world.cracked.find((c) => !c.broken && c === landedOn);
+      if (slab && g === 3 && impact > WEIGHT.anchorSmashFallSpeed) {
+        breakCracked(world, slab, true);
+      } else if (impact > 700) {
+        p.squashX = 1.25;
+        p.squashY = 0.75;
+        world.events.push({ type: 'hardLand', x: pc.x, y: p.y + p.h });
+      } else if (impact > 240) {
+        p.squashX = 1.12;
+        p.squashY = 0.88;
+        world.events.push({ type: 'land', x: pc.x, y: p.y + p.h });
+      }
+    }
+  }
+
+  // --- golems patrol; alert telegraph; touch hurts ---
+  for (const gm of world.golems) {
+    if (!gm.alive) continue;
+    gm.x += gm.dir * WEIGHT.golemSpeed * dt;
+    if (gm.x <= gm.minX) { gm.x = gm.minX; gm.dir = 1; }
+    if (gm.x >= gm.maxX) { gm.x = gm.maxX; gm.dir = -1; }
+    const near = dist(center(gm), center(p)) < WEIGHT.golemAlertRadius;
+    gm.alert = Math.min(1, gm.alert + (near ? dt * 4 : -dt * 3));
+    if (overlap(p, gm) && p.invuln <= 0) hurtPlayer(world, 'golem');
+  }
+
+  // --- mines bob, blink faster up close, explode on touch ---
+  for (const m of world.mines) {
+    if (!m.armed) continue;
+    m.y = m.baseY + Math.sin(world.time * 2 + m.phase) * 6;
+    const d = dist(center(m), center(p));
+    m.near = d < WEIGHT.mineArmRadius ? 1 : 0;
+    if (m.near && Math.sin(world.time * 10 + m.phase) > 0.96) {
+      world.events.push({ type: 'beep', x: m.x + 15, y: m.y + 15 });
+    }
+    if (overlap(p, m) && p.invuln <= 0) {
+      m.armed = false;
+      world.events.push({ type: 'explosion', x: m.x + 15, y: m.y + 15 });
+      hurtPlayer(world, 'mine');
+      // The exploding mine comes back on respawn: mark it home-armed.
+      if (!world.failed) m.armed = true;
+    }
+  }
+
+  // --- orbs ---
+  for (const o of world.orbs) {
+    if (o.taken) continue;
+    if (overlap(p, o)) {
+      o.taken = true;
+      world.stats.orbsTaken += 1;
+      scoreEvent(world, WEIGHT.orbScore, o.x + 9, o.y + 9, 'orb');
+      world.events.push({ type: 'orb', x: o.x + 9, y: o.y + 9 });
+    }
+  }
+
+  // --- switches latch; gates open ---
+  for (const s of world.switches) {
+    let pressed = false;
+    for (const c of world.crates) {
+      if (c.weight >= 2 && overlap(c, { x: s.x, y: s.y - 6, w: s.w, h: s.h + 6 })) pressed = true;
+    }
+    if (p.gauge === 3 && overlap(p, { x: s.x, y: s.y - 6, w: s.w, h: s.h + 6 }) && p.onGround) pressed = true;
+    s.pressed = pressed;
+    if (pressed && !s.latched) {
+      s.latched = true;
+      world.events.push({ type: 'switch', x: s.x + 22, y: s.y });
+      updateDoor(world);
+    }
+  }
+  for (const gt of world.gates) {
+    const shouldOpen = world.switches.some((s) => s.id === gt.condition.switch && s.latched);
+    if (shouldOpen && !gt.open) {
+      gt.open = true;
+      world.events.push({ type: 'gate', x: gt.x + gt.w / 2, y: gt.y + gt.h / 2 });
+    }
+    if (gt.open && gt.openAnim < 1) gt.openAnim = Math.min(1, gt.openAnim + dt * 2.2);
+  }
+
+  // --- door ---
+  if (world.doorOpen) {
+    const door = { x: level.door[0], y: level.door[1], w: 44, h: 64 };
+    if (overlap(p, door)) {
+      world.cleared = true;
+      world.timeBonus = Math.max(0, Math.round((level.par - world.roomTime) * 10));
+      world.clearBonus = WEIGHT.roomClearScore;
+      world.roomScore += world.clearBonus + world.timeBonus;
+      world.events.push({ type: 'clear' });
+    }
+  }
+
+  // --- fell out of the world (safety net; no room has a true pit) ---
+  if (p.y > 640) hurtPlayer(world, 'pit');
+}
+
+export function roomStars(world) {
+  let stars = 1;
+  if (world.orbs.every((o) => o.taken)) stars += 1;
+  if (world.roomTime <= world.level.par) stars += 1;
+  return stars;
 }

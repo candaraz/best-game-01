@@ -1,279 +1,290 @@
-// The nine hand-built rooms. Each grid is 24 by 15 tiles of 40 pixels.
-// Legend: '#' solid, '=' one-way platform, 'X' cracked floor (a weight-3 landing
-// smashes it), 'P' player spawn, 'o' orb, 'C' crate holding 2 weight, 'c' crate
-// holding 0, 'B' boulder holding 2, 'G' golem, 'M' mine, 'S' pressure switch,
-// '|' gate (opens while its switch holds enough weight). The door and the wind
-// zones are explicit: the door is drawn from its base point, zones are rects.
-// Every room holds exactly 2 orbs. Par times were set from measured playthroughs
-// with a generous margin, and every room is script-solved in the playtest.
-// v4: one extra boulder each in rooms 2, 3 and 7, placed on floor the
-// scripted solves never need to cross unjumped and clear of every give/steal
-// target the solves rely on — more weight on screen, same solutions.
+// The nine vault rooms, hand-built in teaching order: one new idea per
+// room, safe first contact, then a twist, then the exam. Coordinates are
+// canvas pixels (960x600); the floor top is y=540 and the walls are 24px.
+// Jump apexes (see config.js): BALANCED ~168px, FEATHER ~160px + slow fall,
+// HEAVY ~133px, ANCHOR ~91px. No step exceeds 64px except routes the
+// updraft or a full jump serves; no horizontal gap exceeds 90px at the
+// same height without a run-up.
 
-export const ROOMS = [
-  {
-    name: 'First Theft',
-    objective: 'Smash the cracked bridge, reach the door',
-    hint: 'Steal weight (E) from the crate until you are ANCHOR, then jump and land hard on the cracked bridge.',
-    par: 30,
-    door: { x: 900, y: 560 },
-    zones: [],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '.....o..................',
-      '....###.................',
-      '........................',
-      '...................o....',
-      '...==...................',
-      '.P...C..................',
-      '##################XXX###',
-      '########################',
-    ],
-  },
-  {
-    name: 'Give It Back',
-    objective: 'Ride the updraft to the high door',
-    hint: 'Give weight (Q) to the empty crate until you are FEATHER, then float up the golden shaft.',
-    par: 30,
-    door: { x: 900, y: 200 },
-    zones: [{ kind: 'updraft', x: 600, y: 120, w: 120, h: 400, strength: 1400 }],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '......o...........######',
-      '......==..........#.....',
-      '..................#.....',
-      '................o.#.....',
-      '....==............#.....',
-      '..................#.....',
-      '..................#.....',
-      '.P.c.............B#.....',
-      '########################',
-      '########################',
-    ],
-  },
-  {
-    name: 'Hollow Patrol',
-    objective: 'Clear the patrol, reach the door',
-    hint: 'Golems hate losing weight. Steal once and they pop.',
-    par: 35,
-    door: { x: 880, y: 520 },
-    zones: [],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........o......o........',
-      '.......===....===.......',
-      '.P.....G......G.....B...',
-      '########################',
-      '########################',
-    ],
-  },
-  {
-    name: 'Quiet Mines',
-    objective: 'Fizzle every mine, reach the door',
-    hint: 'Mines sleep when fed. Give weight (Q) to a mine to fizzle it — crates are your batteries.',
-    par: 45,
-    door: { x: 900, y: 520 },
-    zones: [],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '..........o.............',
-      '.........===............',
-      '........................',
-      '........==..............',
-      '.....................o..',
-      '.P..C....M..C..M..M.....',
-      '########################',
-      '########################',
-    ],
-  },
-  {
-    name: 'Gale Corridor',
-    objective: 'Cross the gale, ride the shaft, reach the door',
-    hint: 'The gale owns the light. Steal to ANCHOR to cross, then give it all back to float up.',
-    par: 45,
-    door: { x: 900, y: 200 },
-    zones: [
-      { kind: 'gale', x: 400, y: 340, w: 200, h: 220, dx: -1, strength: 950 },
-      { kind: 'updraft', x: 600, y: 120, w: 120, h: 400, strength: 1400 },
-    ],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '..................######',
-      '..................#.....',
-      '..................#.....',
-      '................o.#.....',
-      '..................#.....',
-      '..................#.....',
-      '............o.....#.....',
-      '.P..C.....=====c..#.....',
-      '##########.....#########',
-      '##########.....#########',
-    ],
-  },
-  {
-    name: 'Heavy Work',
-    objective: 'Weigh the switch, open the gate',
-    hint: 'Push the empty crate onto the switch, then feed it weight until the gate rises.',
-    par: 50,
-    door: { x: 900, y: 520 },
-    zones: [],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '......o.................',
-      '.....###................',
-      '........................',
-      '..................|.....',
-      '..==..............|.....',
-      '..................|.....',
-      '..................|.o...',
-      '.P..C..B...c..S...|.....',
-      '########################',
-      '########################',
-    ],
-  },
-  {
-    name: 'The Long Drop',
-    objective: 'Smash down, weigh the switch, open the gate',
-    hint: 'Fall from high at ANCHOR to smash. What breaks stays broken — the way down is one-way.',
-    par: 55,
-    door: { x: 900, y: 520 },
-    zones: [],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '.P.C....................',
-      '.#####..................',
-      '........................',
-      '........................',
-      '.......XXX..............',
-      '............o.....|.....',
-      '.......####.......|.....',
-      '..................|.....',
-      '..................|.....',
-      '......c...S.XXXG..|.Bo..',
-      '########################',
-      '########################',
-    ],
-  },
-  {
-    name: 'Vault Gauntlet',
-    objective: 'Run the gauntlet: golem, mines, gale, gate',
-    hint: 'Everything you stole, everything you gave — one corridor, no rest.',
-    par: 70,
-    door: { x: 930, y: 520 },
-    zones: [{ kind: 'gale', x: 400, y: 340, w: 160, h: 220, dx: -1, strength: 950 }],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '........................',
-      '.......o..............|.',
-      '......===.............|.',
-      '...........o..........|.',
-      '......................|.',
-      '.P..C..G.M====.C.M.c.S|.',
-      '##########....##########',
-      '##########....##########',
-    ],
-  },
-  {
-    name: 'The Hollow Vault',
-    objective: 'Open the vault: weigh in, float up, smash down',
-    hint: 'Push the empty crate onto the switch and feed it to open the gate above. Then float up and drop like a star.',
-    par: 80,
-    door: { x: 880, y: 520 },
-    zones: [{ kind: 'updraft', x: 600, y: 200, w: 40, h: 320, strength: 1500 }],
-    grid: [
-      '........................',
-      '........................',
-      '........................',
-      '.....................o..',
-      '.................#######',
-      '...................|....',
-      '...................|....',
-      '................c.C|B...',
-      '..............#.###|#XX#',
-      '..............#.#.......',
-      '...............o#.......',
-      '................#.......',
-      '.P..C..G..M.cS..#.......',
-      '########################',
-      '########################',
-    ],
-  },
-];
+const FLOOR = [0, 540, 960, 60];
+const WALL_L = [0, 0, 24, 600];
+const WALL_R = [936, 0, 24, 600];
 
-/** Parse a room grid into statics and spawn lists. Coordinates are pixels. */
-export function parseRoom(room) {
-  const tile = 40;
-  const solids = [];
-  const oneWay = [];
-  const cracked = [];
-  const gates = [];
-  const orbs = [];
-  const crates = [];
-  const boulders = [];
-  const golems = [];
-  const mines = [];
-  const switches = [];
-  let spawn = { x: 60, y: 480 };
-  for (let row = 0; row < room.grid.length; row += 1) {
-    const line = room.grid[row];
-    for (let col = 0; col < line.length; col += 1) {
-      const ch = line[col];
-      const x = col * tile;
-      const y = row * tile;
-      if (ch === '#') solids.push({ x, y, w: tile, h: tile });
-      else if (ch === '=') oneWay.push({ x, y, w: tile, h: 14 });
-      else if (ch === 'X') cracked.push({ x, y, w: tile, h: tile, broken: false });
-      else if (ch === '|') gates.push({ x, y, w: tile, h: tile });
-      else if (ch === 'P') spawn = { x: x + tile / 2, y: y + tile };
-      else if (ch === 'o') orbs.push({ x: x + tile / 2, y: y + tile / 2, taken: false });
-      else if (ch === 'C') crates.push({ x: x + 1, y, w: 38, h: 38, weight: 2, maxWeight: 3 });
-      else if (ch === 'c') crates.push({ x: x + 1, y, w: 38, h: 38, weight: 0, maxWeight: 3 });
-      else if (ch === 'B') boulders.push({ x, y, w: 40, h: 40, weight: 2, maxWeight: 3, roll: 0 });
-      else if (ch === 'G') golems.push({ x: x + 3, y, w: 34, h: 42, weight: 1, dir: 1, alive: true });
-      else if (ch === 'M') mines.push({ x: x + 5, y: y + 10, w: 30, h: 30, weight: 0, maxWeight: 1, armed: true });
-      else if (ch === 'S') switches.push({ x: x + 2, y: y + 26, w: 36, h: 14, threshold: 2, active: false });
-    }
-  }
-  return { solids, oneWay, cracked, gates, orbs, crates, boulders, golems, mines, switches, spawn };
+function room(def) {
+  return {
+    startGauge: 1,
+    solids: [],
+    cracked: [],
+    crates: [],
+    boulders: [],
+    golems: [],
+    mines: [],
+    orbs: [],
+    switches: [],
+    gates: [],
+    updrafts: [],
+    gales: [],
+    lanterns: [],
+    banners: [],
+    doorLock: 'none',
+    ...def,
+    solids: [FLOOR, WALL_L, WALL_R, ...def.solids],
+  };
 }
+
+export const LEVELS = [
+  // R1 — ki: steal, then smash. The door stays locked until the slab breaks.
+  room({
+    name: 'First Theft',
+    subtitle: 'Room 1 of 9 · The Vault Door',
+    hint: 'Steal weight with E until ANCHOR, then drop onto the cracked slab.',
+    par: 45,
+    spawn: [56, 498],
+    solids: [
+      [120, 440, 110, 24],
+      [60, 360, 110, 24],
+    ],
+    cracked: [{ x: 620, y: 480, w: 160, h: 24, id: 'slab' }],
+    crates: [
+      { x: 300, y: 504, weight: 1 },
+      { x: 420, y: 504, weight: 1 },
+    ],
+    boulders: [{ x: 540, y: 500, weight: 1 }],
+    orbs: [[700, 415], [115, 320]],
+    door: [880, 476],
+    doorLock: 'slab',
+    lanterns: [[180, 60], [480, 60], [780, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+
+  // R2 — sho: give it all away, then float. Start heavy, end weightless.
+  room({
+    name: 'Give It Back',
+    subtitle: 'Room 2 of 9 · The Hollow Shaft',
+    hint: 'Give all weight to the empty crate (Q), then ride the updraft as FEATHER.',
+    par: 50,
+    spawn: [56, 498],
+    startGauge: 2,
+    solids: [
+      [576, 100, 24, 300],
+      [576, 60, 144, 24],
+      [700, 180, 236, 24],
+      [150, 430, 110, 24],
+      [60, 330, 110, 24],
+    ],
+    updrafts: [{ x: 602, y: 104, w: 116, h: 436 }],
+    crates: [
+      { x: 200, y: 504, weight: 0 },
+      { x: 280, y: 504, weight: 1 },
+    ],
+    orbs: [[660, 280], [115, 290]],
+    door: [860, 116],
+    lanterns: [[200, 60], [500, 60], [850, 60]],
+    banners: [[340, 84]],
+  }),
+
+  // R3 — golems: steal their weight and they pop. The cover room.
+  room({
+    name: 'Hollow Patrol',
+    subtitle: 'Room 3 of 9 · The Golem Gallery',
+    hint: 'Pop both golems: steal their weight (E) when close.',
+    par: 60,
+    spawn: [56, 498],
+    solids: [
+      [150, 400, 120, 24],
+      [420, 330, 120, 24],
+      [690, 400, 120, 24],
+    ],
+    golems: [
+      { x: 250, y: 484, minX: 230, maxX: 430 },
+      { x: 600, y: 484, minX: 540, maxX: 740 },
+    ],
+    crates: [
+      { x: 700, y: 364, weight: 1 },
+      { x: 560, y: 504, weight: 1 },
+      { x: 620, y: 504, weight: 1 },
+    ],
+    orbs: [[480, 290], [800, 330]],
+    door: [880, 476],
+    doorLock: 'golems',
+    lanterns: [[180, 60], [480, 60], [780, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+
+  // R4 — mines: steal to disarm; touch is a mistake you survive.
+  room({
+    name: 'Quiet Mines',
+    subtitle: 'Room 4 of 9 · The Sleeping Field',
+    hint: "Steal each mine's weight to disarm it. Don't touch a live one.",
+    par: 55,
+    spawn: [56, 498],
+    solids: [
+      [210, 436, 100, 24],
+      [330, 360, 100, 24],
+      [550, 440, 100, 24],
+      [660, 360, 100, 24],
+    ],
+    mines: [
+      { x: 400, y: 478 },
+      { x: 480, y: 420 },
+      { x: 780, y: 488 },
+    ],
+    crates: [
+      { x: 150, y: 504, weight: 1 },
+      { x: 220, y: 504, weight: 0 },
+    ],
+    orbs: [[380, 320], [710, 320]],
+    door: [880, 476],
+    doorLock: 'mines',
+    lanterns: [[180, 60], [480, 60], [780, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+
+  // R5 — combination: ANCHOR through the gale, FEATHER up the shaft.
+  room({
+    name: 'Gale Corridor',
+    subtitle: 'Room 5 of 9 · The Wind Gate',
+    hint: 'Steal to ANCHOR to cross the gale, then give it all away and float up.',
+    par: 65,
+    spawn: [56, 498],
+    solids: [
+      [150, 400, 100, 24],
+      [626, 100, 24, 300],
+      [626, 60, 120, 24],
+      [740, 150, 196, 24],
+    ],
+    gales: [{ x: 250, y: 300, w: 350, h: 240, dir: -1 }],
+    updrafts: [{ x: 652, y: 104, w: 90, h: 436 }],
+    crates: [
+      { x: 120, y: 504, weight: 1 },
+      { x: 200, y: 504, weight: 1 },
+      { x: 540, y: 504, weight: 0 },
+      { x: 585, y: 504, weight: 0 },
+    ],
+    boulders: [{ x: 170, y: 360, weight: 1 }],
+    orbs: [[420, 430], [697, 280]],
+    door: [860, 86],
+    lanterns: [[150, 60], [450, 60], [800, 60]],
+    banners: [[340, 84]],
+  }),
+
+  // R6 — heavy work: make a crate heavy, push it onto the plate.
+  room({
+    name: 'Heavy Work',
+    subtitle: 'Room 6 of 9 · The Press Floor',
+    hint: 'Give weight to the middle crate until it is heavy, then push it (HEAVY) onto the plate.',
+    par: 60,
+    spawn: [56, 498],
+    solids: [
+      [190, 436, 100, 24],
+      [300, 340, 110, 24],
+      [690, 440, 60, 24],
+      [790, 340, 110, 24],
+    ],
+    crates: [
+      { x: 110, y: 504, weight: 1 },
+      { x: 155, y: 504, weight: 1 },
+      { x: 210, y: 504, weight: 1 },
+    ],
+    switches: [{ x: 600, y: 530, id: 's1' }],
+    gates: [{ x: 760, y: 180, w: 24, h: 360, condition: { switch: 's1' } }],
+    orbs: [[355, 300], [845, 300]],
+    door: [880, 476],
+    doorLock: 'switch',
+    lanterns: [[180, 60], [480, 60], [780, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+
+  // R7 — ten, the twist: you do not smash it. The boulder does.
+  room({
+    name: 'The Long Drop',
+    subtitle: 'Room 7 of 9 · The Drop Shaft',
+    hint: 'Make the boulder heavy and let it smash the cracked floor. Then drop in.',
+    par: 70,
+    spawn: [56, 498],
+    solids: [
+      [120, 436, 110, 24],
+      [240, 360, 110, 24],
+      [390, 300, 110, 24],
+      [550, 300, 110, 24],
+      [400, 404, 24, 136],
+      [536, 404, 24, 136],
+      [660, 290, 120, 24],
+    ],
+    cracked: [{ x: 400, y: 380, w: 160, h: 24, id: 'slab' }],
+    crates: [{ x: 150, y: 504, weight: 1 }],
+    boulders: [{ x: 450, y: 340, weight: 1 }],
+    orbs: [[720, 250], [135, 395]],
+    door: [490, 476],
+    doorLock: 'slab',
+    lanterns: [[200, 60], [480, 60], [800, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+
+  // R8 — gauntlet: everything so far, in one corridor, with the wind
+  // pushing you toward the danger.
+  room({
+    name: 'Vault Gauntlet',
+    subtitle: 'Room 8 of 9 · The Trial Hall',
+    hint: 'Pop the golem, disarm both mines. The gale pushes toward danger.',
+    par: 75,
+    spawn: [56, 498],
+    solids: [
+      [150, 400, 110, 24],
+      [400, 330, 110, 24],
+      [650, 400, 110, 24],
+    ],
+    cracked: [{ x: 700, y: 460, w: 120, h: 24, id: 'slab' }],
+    gales: [{ x: 470, y: 300, w: 140, h: 240, dir: 1 }],
+    golems: [{ x: 200, y: 484, minX: 180, maxX: 380 }],
+    mines: [
+      { x: 500, y: 478 },
+      { x: 600, y: 438 },
+    ],
+    crates: [
+      { x: 120, y: 504, weight: 1 },
+      { x: 300, y: 504, weight: 1 },
+    ],
+    boulders: [{ x: 430, y: 290, weight: 1 }],
+    orbs: [[455, 290], [760, 420]],
+    door: [880, 476],
+    doorLock: 'golems+mines',
+    lanterns: [[150, 60], [450, 60], [780, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+
+  // R9 — ketsu, the exam: pop, disarm, press, open. The vault awaits.
+  room({
+    name: 'The Hollow Vault',
+    subtitle: 'Room 9 of 9 · The Final Vault',
+    hint: 'Everything you know: pop, disarm, press, open. The vault awaits.',
+    par: 90,
+    spawn: [56, 498],
+    solids: [
+      [150, 400, 110, 24],
+      [350, 330, 110, 24],
+      [620, 400, 110, 24],
+    ],
+    golems: [
+      { x: 150, y: 484, minX: 130, maxX: 330 },
+      { x: 350, y: 484, minX: 330, maxX: 530 },
+    ],
+    mines: [
+      { x: 560, y: 478 },
+      { x: 640, y: 448 },
+    ],
+    crates: [
+      { x: 110, y: 504, weight: 1 },
+      { x: 155, y: 504, weight: 1 },
+      { x: 210, y: 504, weight: 1 },
+      { x: 700, y: 364, weight: 1 },
+    ],
+    switches: [{ x: 700, y: 530, id: 's1' }],
+    gates: [{ x: 800, y: 180, w: 24, h: 360, condition: { switch: 's1' } }],
+    orbs: [[405, 290], [675, 360]],
+    door: [880, 476],
+    doorLock: 'golems+mines+switch',
+    lanterns: [[150, 60], [450, 60], [780, 60]],
+    banners: [[340, 84], [640, 84]],
+  }),
+];

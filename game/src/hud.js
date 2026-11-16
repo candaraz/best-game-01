@@ -1,21 +1,12 @@
-// The heads-up display: four corners, each carrying its own information, plus
-// the room-progress strip along the bottom. The weight gauge is the largest
-// element — the whole game is about weight, so the gauge must read from across
-// the room, and it must read in a screenshot shrunk to a quarter of its size.
+// The HUD: top bar (room, objective, timer, score, combo, orbs), a big
+// labeled weight gauge bottom-left, vault progress bottom-right. Drawn
+// without the camera shake, and never over the middle of the action.
 
-import { FIELD, WEIGHTS, SCORE, PALETTE } from './config.js';
+import { PALETTE, SEALS, VIEW, WEIGHT_EFFECTS, WEIGHT_NAMES } from './config.js';
+import { doorRequirements } from './world.js';
+import { roundRect } from './render.js';
 
-function panel(ctx, x, y, w, h, alpha = 0.72) {
-  ctx.save();
-  ctx.fillStyle = `rgba(12, 14, 28, ${alpha})`;
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, 8);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(217, 180, 91, 0.35)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  ctx.restore();
-}
+const FONT = '"Avenir Next", "Segoe UI", Verdana, sans-serif';
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
@@ -23,199 +14,168 @@ function formatTime(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export function drawHud(ctx, view) {
-  const { world, totalScore, stars, roomCount, best, muted, time } = view;
-  const { state } = world;
-  const p = state.player;
-  const w = WEIGHTS[p.gauge];
+function panel(ctx, x, y, w, h) {
+  ctx.fillStyle = 'rgba(7, 10, 24, 0.78)';
+  roundRect(ctx, x, y, w, h, 9);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(106, 116, 168, 0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
 
-  // Top-left: room name, objective, hearts.
-  panel(ctx, 12, 10, 318, 66);
-  ctx.textBaseline = 'alphabetic';
+export function drawHud(ctx, world, run, time) {
+  const level = world.level;
+  const p = world.player;
+
+  // --- top bar ---
+  panel(ctx, 12, 10, VIEW.w - 24, 52);
   ctx.textAlign = 'left';
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = 'bold 16px system-ui, sans-serif';
-  ctx.fillText(`ROOM ${state.roomIndex + 1} · ${state.def.name.toUpperCase()}`, 24, 32);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText(state.def.objective, 24, 50);
-  for (let i = 0; i < 3; i += 1) {
-    const x = 24 + i * 26;
-    const y = 64;
-    const filled = i < p.hearts;
-    ctx.fillStyle = filled ? '#ff6b5e' : '#3a4170';
-    ctx.beginPath();
-    ctx.moveTo(x, y + 4);
-    ctx.bezierCurveTo(x - 7, y - 4, x - 12, y + 3, x, y + 11);
-    ctx.bezierCurveTo(x + 12, y + 3, x + 7, y - 4, x, y + 4);
-    ctx.fill();
-  }
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText('R retry · P pause · M sound', 106, 72);
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 17px ${FONT}`;
+  ctx.fillText(`ROOM ${world.levelIndex + 1} · ${level.name.toUpperCase()}`, 24, 31);
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.65)';
+  ctx.font = `12px ${FONT}`;
+  ctx.fillText(level.subtitle, 24, 49);
 
-  // Top-right: score, multiplier, orbs, timer vs par.
-  panel(ctx, FIELD.width - 262, 10, 250, 66);
+  // Objective checklist, centre.
+  const reqs = doorRequirements(world);
+  ctx.textAlign = 'center';
+  ctx.font = `bold 13px ${FONT}`;
+  reqs.forEach((req, i) => {
+    const y = 27 + i * 17 - (reqs.length - 1) * 8;
+    ctx.fillStyle = req.done ? PALETTE.cyan : PALETTE.gold;
+    ctx.fillText(`${req.done ? '✓' : '○'} ${req.label}`, 480, y);
+  });
+
+  // Timer + score, right.
   ctx.textAlign = 'right';
-  ctx.fillStyle = '#ffd76a';
-  ctx.font = 'bold 22px system-ui, sans-serif';
-  ctx.fillText(totalScore.toLocaleString('en-US'), FIELD.width - 24, 36);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '12px system-ui, sans-serif';
-  const mult = state.combo > 1 ? `  ×${Math.max(1, state.combo)} COMBO` : '';
-  ctx.fillText(`SCORE${mult}`, FIELD.width - 24, 52);
-  ctx.fillStyle = state.combo > 1 ? '#ffd76a' : '#aeb4d4';
-  ctx.font = 'bold 12px system-ui, sans-serif';
-  ctx.fillText(`◆ ${state.orbsTaken}/2`, FIELD.width - 118, 70);
-  ctx.fillStyle = state.time > state.def.par ? '#ff6b5e' : '#aeb4d4';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText(`${formatTime(state.time)} / par ${formatTime(state.def.par)}`, FIELD.width - 24, 70);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold 17px ${FONT}`;
+  ctx.fillText(`★ ${run.score + world.roomScore}`, 936, 31);
+  const overPar = world.roomTime > level.par;
+  ctx.fillStyle = overPar ? PALETTE.danger : PALETTE.parchment;
+  ctx.font = `13px ${FONT}`;
+  ctx.fillText(`${formatTime(world.roomTime)} / par ${formatTime(level.par)}`, 936, 49);
 
-  // Bottom-left: the weight gauge — large, labelled, with its effect spelled out.
-  const gx = 12;
-  const gy = FIELD.height - 92;
-  panel(ctx, gx, gy, 300, 80);
+  // --- top-left column: hearts, orbs, seals, then the weight gauge ---
+  // The gauge lives up here, never over the floor where the action is.
+  for (let i = 0; i < p.maxHearts; i += 1) {
+    const hx = 26 + i * 22;
+    const hy = 82;
+    ctx.fillStyle = i < p.hearts ? PALETTE.danger : 'rgba(255, 255, 255, 0.22)';
+    ctx.font = '17px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.fillText('♥', hx, hy);
+  }
+  const orbsGot = world.orbs.filter((o) => o.taken).length;
+  ctx.fillStyle = PALETTE.orb;
+  ctx.font = `bold 15px ${FONT}`;
   ctx.textAlign = 'left';
-  ctx.fillStyle = w.colour;
-  ctx.font = 'bold 15px system-ui, sans-serif';
-  ctx.fillText(`WEIGHT ${p.gauge} · ${w.name}`, gx + 14, gy + 22);
-  for (let i = 0; i < 3; i += 1) {
-    const bx = gx + 14 + i * 34;
-    const by = gy + 32;
-    ctx.fillStyle = i < p.gauge ? w.colour : '#2c3050';
-    ctx.beginPath();
-    ctx.roundRect(bx, by, 28, 16, 4);
+  ctx.fillText(`◆ ${orbsGot}/${world.orbs.length}`, 26, 106);
+
+  // Seal icons, top-left under the orbs.
+  let sx = 26;
+  for (const seal of SEALS) {
+    if (!world.seals.has(seal.id)) continue;
+    ctx.fillStyle = 'rgba(7, 10, 24, 0.78)';
+    roundRect(ctx, sx, 114, 24, 24, 6);
     ctx.fill();
-    ctx.strokeStyle = '#d9b45b';
+    ctx.strokeStyle = PALETTE.cyan;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.cyan;
+    ctx.font = '14px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.fillText(seal.icon, sx + 12, 131);
+    sx += 30;
+  }
+
+  // The weight gauge, big and labeled, top-left under the seals.
+  const gx = 12;
+  const gy = 146;
+  panel(ctx, gx, gy, 300, 74);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = PALETTE.parchment;
+  ctx.font = `bold 13px ${FONT}`;
+  ctx.fillText('WEIGHT', gx + 14, gy + 20);
+  ctx.fillStyle = PALETTE.cyan;
+  ctx.font = `bold 17px ${FONT}`;
+  ctx.fillText(WEIGHT_NAMES[p.gauge], gx + 78, gy + 21);
+  // Gauge pips.
+  for (let i = 0; i < 4; i += 1) {
+    const px = gx + 14 + i * 34;
+    const py = gy + 30;
+    ctx.fillStyle = i <= p.gauge ? (i === 0 ? PALETTE.cyan : i === 3 ? PALETTE.gold : '#ffb35c') : 'rgba(255, 255, 255, 0.18)';
+    roundRect(ctx, px, py, 28, 16, 4);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
     ctx.lineWidth = 1;
     ctx.stroke();
   }
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  // The verb shares its row with the gauge bars: truncate with an ellipsis
-  // rather than letting it run under the roster panel.
-  let verb = w.verb;
-  const verbMax = gx + 300 - 8 - (gx + 124);
-  while (verb.length > 1 && ctx.measureText(verb).width > verbMax) {
-    verb = verb.replace(/…$/, '');
-    const cut = verb.lastIndexOf(' ');
-    verb = (cut > 0 ? verb.slice(0, cut) : verb.slice(0, -1)) + '…';
-  }
-  ctx.fillText(verb, gx + 124, gy + 45);
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = 'bold 11px system-ui, sans-serif';
-  ctx.fillText('E steal', gx + 14, gy + 66);
-  ctx.fillStyle = '#9fe8ff';
-  ctx.fillText('Q give', gx + 62, gy + 66);
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText('click: left steal · right give', gx + 112, gy + 66);
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.75)';
+  ctx.font = `12px ${FONT}`;
+  ctx.fillText(WEIGHT_EFFECTS[p.gauge], gx + 14, gy + 62);
+  // Key hints.
+  ctx.fillStyle = PALETTE.cyan;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.fillText('E steal', gx + 176, gy + 20);
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillText('Q give', gx + 232, gy + 20);
 
-  // Bottom-right: room progress — nine dots, stars earned, best score.
-  const px = FIELD.width - 262;
-  const py = FIELD.height - 92;
-  panel(ctx, px, py, 250, 80);
+  // Combo, centre-top under the bar.
+  if (world.combo > 1) {
+    const label = `COMBO ×${world.combo}`;
+    ctx.font = `bold 20px ${FONT}`;
+    const tw = ctx.measureText(label).width + 24;
+    panel(ctx, 480 - tw / 2, 68, tw, 30);
+    ctx.fillStyle = PALETTE.gold;
+    ctx.textAlign = 'center';
+    ctx.fillText(label, 480, 89);
+    const window = world.seals.has('hands') ? 4.5 : 3.0;
+    const frac = Math.max(0, world.comboTimer / window);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.fillRect(480 - tw / 2 + 8, 94, tw - 16, 3);
+    ctx.fillStyle = PALETTE.gold;
+    ctx.fillRect(480 - tw / 2 + 8, 94, (tw - 16) * frac, 3);
+  }
+
+  // --- bottom-right: vault progress dots + best ---
+  const bx = VIEW.w - 12 - 250;
+  const by = VIEW.h - 62;
+  panel(ctx, bx, by, 250, 50);
   ctx.textAlign = 'left';
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText('VAULT PROGRESS', px + 14, py + 20);
-  for (let i = 0; i < roomCount; i += 1) {
-    const dx = px + 18 + i * 26;
-    const dy = py + 36;
-    const earned = stars[i] || 0;
-    const current = i === state.roomIndex;
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+  ctx.font = `11px ${FONT}`;
+  ctx.fillText('VAULT', bx + 14, by + 17);
+  for (let i = 0; i < 9; i += 1) {
+    const dotX = bx + 66 + i * 18;
+    const dotY = by + 13;
+    const done = i < world.levelIndex;
+    const current = i === world.levelIndex;
     ctx.beginPath();
-    ctx.arc(dx, dy, current ? 9 : 7, 0, Math.PI * 2);
-    ctx.fillStyle = current ? '#ffd76a' : earned > 0 ? '#57e6a8' : '#2c3050';
+    ctx.arc(dotX, dotY, current ? 7 : 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = done ? PALETTE.cyan : current ? PALETTE.gold : 'rgba(255, 255, 255, 0.22)';
     ctx.fill();
-    ctx.strokeStyle = current ? '#fff3c4' : '#4a5180';
-    ctx.lineWidth = current ? 2 : 1;
-    ctx.stroke();
-    if (earned > 0 && !current) {
-      ctx.fillStyle = '#0c0e1c';
-      ctx.font = 'bold 9px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(String(earned), dx, dy + 3);
-      ctx.textAlign = 'left';
+    if (current) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
   }
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText(
-    best > 0 ? `BEST ${best.toLocaleString('en-US')}` : 'NO BEST YET — FINISH A ROOM',
-    px + 14,
-    py + 66,
-  );
-  if (muted) {
-    ctx.fillStyle = '#ff9a5c';
-    ctx.font = 'bold 11px system-ui, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText('MUTED', px + 236, py + 66);
-    ctx.textAlign = 'left';
-  }
+  ctx.fillStyle = 'rgba(242, 231, 201, 0.7)';
+  ctx.font = `12px ${FONT}`;
+  ctx.fillText(`BEST ★ ${run.best}`, bx + 14, by + 38);
+  ctx.textAlign = 'right';
+  ctx.fillText('P pause · M mute', bx + 236, by + 38);
 
-  // Bottom-centre: the room roster — what is still in this room, at a
-  // glance, like the top entries' INCOMING lists: golems left, mines armed,
-  // orbs left, weight still held by objects, and whether the gate stands
-  // open. The four corners keep their jobs; this strip shows the systems.
-  const rx = 324;
-  const ry = FIELD.height - 92;
-  panel(ctx, rx, ry, 312, 80);
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText('IN THIS ROOM', rx + 14, ry + 20);
-  const golemsLeft = state.golems.filter((g) => g.alive).length;
-  const minesArmed = state.mines.filter((m) => m.armed).length;
-  const weightHere =
-    state.crates.reduce((s, c) => s + c.weight, 0) +
-    state.boulders.reduce((s, b) => s + b.weight, 0) +
-    state.golems.reduce((s, g) => s + (g.alive ? g.weight : 0), 0);
-  ctx.fillStyle = '#f2e8d8';
-  ctx.font = 'bold 13px system-ui, sans-serif';
-  ctx.fillText(
-    `GOLEMS ${golemsLeft}  ·  MINES ${minesArmed}  ·  ORBS ◆ ${state.orbsTaken}/2`,
-    rx + 14,
-    ry + 42,
-  );
-  ctx.fillStyle = '#aeb4d4';
-  ctx.font = '11px system-ui, sans-serif';
-  const gateLine =
-    state.switches.length > 0
-      ? state.gateOpen > 0.6
-        ? 'GATE OPEN — GO'
-        : 'GATE SHUT — FEED THE SWITCH'
-      : 'DOOR OPEN — REACH IT';
-  ctx.fillText(`WEIGHT HERE ${weightHere}   ·   ${gateLine}`, rx + 14, ry + 66);
-
-  // Combo callout in the centre-top when a chain is running.
-  if (state.combo >= 2 && state.comboTimer > 0) {
-    const frac = state.comboTimer / SCORE.comboWindow;
-    ctx.save();
+  // Hint line, first seconds of the room.
+  if (world.roomTime < 6 && !world.cleared) {
+    ctx.font = `13px ${FONT}`;
+    const hw = ctx.measureText(level.hint).width + 28;
+    panel(ctx, 480 - hw / 2, VIEW.h - 40, hw, 28);
+    ctx.fillStyle = PALETTE.parchment;
     ctx.textAlign = 'center';
-    ctx.font = 'bold 20px system-ui, sans-serif';
-    ctx.fillStyle = '#8a5f00';
-    ctx.fillText(`COMBO ×${state.combo}`, FIELD.width / 2, 34);
-    ctx.fillStyle = '#b98a52';
-    ctx.fillRect(FIELD.width / 2 - 50, 42, 100, 5);
-    ctx.fillStyle = '#8a5f00';
-    ctx.fillRect(FIELD.width / 2 - 50, 42, 100 * frac, 5);
-    ctx.restore();
-  }
-
-  // The room's hint line, fading after the first seconds of the room. It sits
-  // under the top HUD, clear of the action below.
-  if (state.time < 6 && state.def.hint) {
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, (6 - state.time) / 1.5);
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.fillStyle = '#2a1f10';
-    ctx.shadowColor = '#fff8e0';
-    ctx.shadowBlur = 6;
-    ctx.fillText(state.def.hint, FIELD.width / 2, 96);
-    ctx.restore();
+    ctx.fillText(level.hint, 480, VIEW.h - 21);
   }
   void time;
-  void PALETTE;
 }

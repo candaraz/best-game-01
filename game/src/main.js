@@ -1,91 +1,41 @@
-// BALLAST: the loop, the screens, and the wiring between the simulation and
-// the feedback. The world reports events; this file turns them into particles,
-// floating text, shake and sound. Nothing here changes the rules — it only
-// presents them, tracks the run, and keeps the bests between visits.
+// BALLAST — main loop: screens, run state, fixed-timestep simulation,
+// event drain into juice + sound, save data, and the debug hook the
+// playtests drive. The game runs at 960x600; ?shot=<scene>&seed=<n> freezes
+// a staged deterministic frame for screenshots.
 
-import { FIELD, STEP, SCORE, BEST_KEY } from './config.js';
-import { ROOMS } from './levels.js';
-import {
-  ACT_CONFIRM,
-  ACT_JUMP,
-  ACT_MUTE,
-  ACT_PAUSE,
-  ACT_RETRY,
-  createInput,
-} from './input.js';
-import { createWorld } from './world.js';
-import { createJuice } from './juice.js';
-import { sfx } from './audio.js';
-import { drawWorld } from './render.js';
+import { STEP, STORAGE_KEY, VIEW } from './config.js';
+import { createInput } from './input.js';
+import { createAudio } from './audio.js';
+import { createWorld, roomStars, stepWorld } from './world.js';
+import { createJuice, drawJuiceWorld, handleEvent, stepJuice } from './juice.js';
 import { drawHud } from './hud.js';
+import { drawWorld, drawVignette } from './render.js';
 import {
-  drawTitle,
-  drawPause,
-  drawClear,
-  drawVictory,
-  drawFailed,
+  drawClear, drawFailed, drawHowto, drawPause, drawSeals, drawTitle,
+  drawTitleDiorama, drawVictory, SEALS,
 } from './screens.js';
-import { runShot } from './shots.js';
+import { stageShot } from './shots.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const input = createInput(canvas);
-const juice = createJuice();
 
-function defaultBests() {
-  return {
-    bestScore: 0,
-    stars: Array(ROOMS.length).fill(0),
-    perRoom: ROOMS.map(() => ({ score: 0, stars: 0 })),
-    unlocked: 1,
-  };
-}
-
-function loadBests() {
+function loadSave() {
+  const fallback = { best: 0, stars: {}, unlocked: 1, muted: false, runs: [] };
   try {
-    const raw = localStorage.getItem(BEST_KEY);
-    if (!raw) return defaultBests();
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return fallback;
     const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.stars) || parsed.stars.length !== ROOMS.length) {
-      return defaultBests();
-    }
-    return {
-      bestScore: parsed.bestScore || 0,
-      stars: parsed.stars,
-      perRoom: Array.isArray(parsed.perRoom) ? parsed.perRoom : ROOMS.map(() => ({ score: 0, stars: 0 })),
-      unlocked: Math.max(1, Math.min(ROOMS.length, parsed.unlocked || 1)),
-    };
+    return { ...fallback, ...parsed, stars: parsed.stars || {}, runs: parsed.runs || [] };
   } catch {
-    return defaultBests();
+    return fallback;
   }
 }
 
-let bests = loadBests();
-
-function saveBests() {
+function persistSave(save) {
   try {
-    localStorage.setItem(BEST_KEY, JSON.stringify(bests));
-  } catch {
-    /* private mode: the run still counts, it just is not kept */
-  }
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(save));
+  } catch { /* private mode or blocked storage: the game still plays */ }
 }
-
-let screen = 'title';
-let world = null;
-let totalScore = 0;
-let runScores = Array(ROOMS.length).fill(0);
-let runStars = Array(ROOMS.length).fill(0);
-let runTime = 0;
-let selected = 0;
-let showHelp = false;
-let buttons = [];
-let clearInfo = null;
-let clearT = 0;
-let starSfxFired = 0;
-let victoryInfo = null;
-let time = 0;
-let accumulator = 0;
-let last = performance.now();
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
@@ -93,401 +43,430 @@ function formatTime(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-/** Turn the world's events into feedback. Shot staging reuses this handler,
- *  so a staged frame shows exactly the feedback a player would see. */
-function handleEvents(aWorld, aJuice) {
-  for (const event of aWorld.drainEvents()) {
-    switch (event.type) {
-      case 'jump':
-        aJuice.landDust(event.x, event.y, false);
-        sfx.jump();
-        break;
-      case 'push':
-        aJuice.pushDust(event.x, event.y, event.dir);
-        break;
-      case 'land':
-        aJuice.landDust(event.x, event.y, event.hard);
-        sfx.land(event.hard);
-        if (event.hard) {
-          aJuice.ring(event.x, event.y, '#c9c2a8', 44);
-          aJuice.shake(4, 0.15);
-        }
-        break;
-      case 'steal':
-        aJuice.transfer(event.fromX, event.fromY, event.toX, event.toY, '#ffd76a');
-        aJuice.flash(event.fromX, event.fromY, '#fff3c4', 26);
-        aJuice.floatText(event.toX, event.toY - 34, '+1 WEIGHT', '#ffd76a', 17);
-        sfx.steal();
-        break;
-      case 'give':
-        aJuice.transfer(event.fromX, event.fromY, event.toX, event.toY, '#9fe8ff');
-        aJuice.flash(event.toX, event.toY, '#bdf3ff', 26);
-        aJuice.floatText(event.toX, event.toY - 34, '+1 WEIGHT', '#9fe8ff', 17);
-        sfx.give();
-        break;
-      case 'denied':
-        aJuice.floatText(event.x, event.y, event.text, '#ff9a5c', 13);
-        sfx.denied();
-        break;
-      case 'orb':
-        aJuice.orbSparkle(event.x, event.y);
-        aJuice.floatText(event.x, event.y - 20, `+${event.gained}`, '#ffd76a', 18);
-        sfx.orb();
-        break;
-      case 'pop':
-        aJuice.golemPop(event.x, event.y);
-        aJuice.flash(event.x, event.y, '#fff3c4', 40);
-        aJuice.ring(event.x, event.y, '#ffd76a', 64);
-        aJuice.floatText(event.x, event.y - 30, `POP! +${event.gained}`, '#ffd76a', 20);
-        aJuice.shake(6, 0.2);
-        aJuice.freeze(0.05);
-        sfx.pop();
-        break;
-      case 'fizzle':
-        aJuice.mineFizzle(event.x, event.y);
-        aJuice.decal(event.x, event.y, 'scorch');
-        aJuice.floatText(event.x, event.y - 26, `FIZZLE +${event.gained}`, '#9fe8ff', 18);
-        sfx.fizzle();
-        break;
-      case 'smashTile':
-        aJuice.smashDebris(event.x, event.y);
-        aJuice.decal(event.x, event.y, 'rubble');
-        break;
-      case 'smash':
-        // The rarest, heaviest hit earns the longest freeze: ~5 frames.
-        aJuice.flash(event.x, event.y, '#fff3c4', 46);
-        aJuice.ring(event.x, event.y, '#c99a6b', 72);
-        aJuice.shake(9, 0.28);
-        aJuice.freeze(0.09);
-        sfx.smash();
-        break;
-      case 'hurt':
-        aJuice.hurtBurst(event.x, event.y);
-        aJuice.shake(7, 0.25);
-        sfx.hurt();
-        break;
-      case 'explode':
-        aJuice.hurtBurst(event.x, event.y);
-        aJuice.flash(event.x, event.y, '#ff6b5e', 44);
-        aJuice.ring(event.x, event.y, '#ff6b5e', 64);
-        aJuice.shake(8, 0.3);
-        aJuice.freeze(0.06);
-        sfx.smash();
-        break;
-      case 'pit':
-        aJuice.shake(5, 0.2);
-        sfx.hurt();
-        break;
-      case 'switchOn':
-        aJuice.floatText(event.x, event.y - 16, 'GATE OPEN', '#57e6a8', 16);
-        sfx.switchOn();
-        break;
-      case 'clear':
-        aJuice.doorGlow(event.x, event.y);
-        sfx.door();
-        break;
-      case 'galeStreak': {
-        const zone = event.zone;
-        aJuice.windStreak(
-          zone.x + Math.random() * zone.w,
-          zone.y + Math.random() * zone.h,
-          zone.dx,
-          'rgba(159, 232, 255, 0.5)',
-        );
-        break;
-      }
-      case 'updraftMote': {
-        const zone = event.zone;
-        aJuice.updraftMote(zone.x + Math.random() * zone.w, zone.y + zone.h - 6);
-        break;
-      }
-      default:
-        break;
-    }
-  }
+function freshRun(best) {
+  return {
+    score: 0, roomStars: {}, starsTotal: 0,
+    transfers: 0, pops: 0, disarms: 0, smashes: 0, orbsTaken: 0, sealsTaken: 0,
+    bestCombo: 0, startTime: 0, timeText: '0:00', best,
+  };
+}
+
+const game = {
+  input: createInput(canvas),
+  audio: createAudio(),
+  save: loadSave(),
+  screen: 'title',
+  world: null,
+  juice: createJuice(12345),
+  seals: new Set(),
+  run: null,
+  buttons: [],
+  clearState: null,
+  clearT: 0,
+  sealChoice: [],
+  clearPending: 0,
+  failPending: 0,
+  time: 0,
+  frozen: false,
+  frozenTime: 0,
+  diorama: null,
+  dioramaJuice: createJuice(777),
+  dioramaBeamTimer: 0,
+};
+game.run = freshRun(game.save.best);
+game.audio.setMuted(game.save.muted);
+
+// The title diorama: room 3 with Pip staged on the middle ledge.
+game.diorama = createWorld(2, new Set());
+game.diorama.player.x = 450;
+game.diorama.player.y = 288;
+game.diorama.player.gauge = 1;
+game.diorama.player.hideTag = true;
+game.diorama.golems[0].x = 372;
+game.diorama.golems[0].alert = 0.7;
+game.world = createWorld(0, game.seals);
+
+const params = new URLSearchParams(window.location.search);
+const shot = params.get('shot');
+if (shot) {
+  const seed = Number(params.get('seed') || '1') || 1;
+  stageShot(game, shot, seed);
 }
 
 function startRoom(index) {
-  world = createWorld(ROOMS[index], index);
-  juice.clear();
-  accumulator = 0;
-  screen = 'playing';
+  game.world = createWorld(index, game.seals);
+  game.juice = createJuice((Math.random() * 2147483647) | 0);
+  game.screen = 'playing';
+  game.clearPending = 0;
+  game.failPending = 0;
+  game.clearState = null;
 }
 
 function startRun(index) {
-  totalScore = 0;
-  runScores = Array(ROOMS.length).fill(0);
-  runStars = Array(ROOMS.length).fill(0);
-  runTime = 0;
+  game.seals = new Set();
+  game.run = freshRun(game.save.best);
+  game.run.startTime = game.time;
   startRoom(index);
 }
 
-function onClear() {
-  const { state } = world;
-  const roomScore = state.score;
-  const timeBonus = Math.max(0, Math.floor(state.def.par - state.time)) * SCORE.timeBonusPerSecond;
-  const noDamageBonus = state.damageTaken ? 0 : SCORE.noDamageBonus;
-  const gained = SCORE.roomClear + roomScore + timeBonus + noDamageBonus;
-  const stars = 1 + (state.orbsTaken >= 2 ? 1 : 0) + (state.time <= state.def.par && !state.damageTaken ? 1 : 0);
-  totalScore += gained;
-  runScores[state.roomIndex] = gained;
-  runStars[state.roomIndex] = stars;
-  runTime += state.time;
-  bests.stars[state.roomIndex] = Math.max(bests.stars[state.roomIndex], stars);
-  const best = bests.perRoom[state.roomIndex];
-  if (gained > best.score) {
-    best.score = gained;
-    best.stars = stars;
-  }
-  bests.unlocked = Math.max(bests.unlocked, Math.min(ROOMS.length, state.roomIndex + 2));
-  saveBests();
-  clearInfo = {
-    room: { index: state.roomIndex, name: state.def.name },
+function showClear() {
+  const world = game.world;
+  const stars = roomStars(world);
+  const earned = world.roomScore - world.clearBonus - world.timeBonus;
+  game.clearState = {
     stars,
-    breakdown: {
-      roomScore: SCORE.roomClear + roomScore,
-      timeBonus,
-      noDamageBonus,
-      totalScore,
-      timeText: `${formatTime(state.time)} / par ${formatTime(state.def.par)}`,
-      orbs: state.orbsTaken,
-      damageTaken: state.damageTaken,
-    },
-    isLast: state.roomIndex === ROOMS.length - 1,
+    earnedText: `+${earned}`,
+    clearBonus: world.clearBonus,
+    timeBonus: world.timeBonus,
+    roomScore: world.roomScore,
+    timeText: formatTime(world.roomTime),
   };
-  clearT = 0;
-  starSfxFired = 0;
-  screen = 'clear';
-  sfx.clear();
+  const i = world.levelIndex;
+  game.run.score += world.roomScore;
+  game.run.roomStars[i] = Math.max(game.run.roomStars[i] || 0, stars);
+  game.run.starsTotal = Object.values(game.run.roomStars).reduce((a, b) => a + b, 0);
+  game.run.transfers += world.stats.transfers;
+  game.run.pops += world.stats.pops;
+  game.run.disarms += world.stats.disarms;
+  game.run.smashes += world.stats.smashes;
+  game.run.orbsTaken += world.stats.orbsTaken;
+  game.run.bestCombo = Math.max(game.run.bestCombo, world.stats.bestCombo);
+  game.save.stars[i] = Math.max(game.save.stars[i] || 0, stars);
+  game.save.unlocked = Math.min(9, Math.max(game.save.unlocked, i + 2));
+  game.save.best = Math.max(game.save.best, game.run.score);
+  game.run.best = game.save.best;
+  persistSave(game.save);
+  game.clearT = 0;
+  game.screen = 'clear';
 }
 
-function onVictory() {
-  const perRoom = ROOMS.map((room, i) => ({
-    name: room.name,
-    score: runScores[i] || bests.perRoom[i].score,
-    stars: runStars[i] || bests.perRoom[i].stars,
-  }));
-  const isNewBest = totalScore > bests.bestScore;
-  if (isNewBest) {
-    bests.bestScore = totalScore;
-    saveBests();
+function showFailed() {
+  game.screen = 'failed';
+}
+
+function finishRun() {
+  const run = game.run;
+  run.timeText = formatTime(game.time - run.startTime);
+  game.save.runs.unshift({ score: run.score, stars: run.starsTotal, time: run.timeText });
+  game.save.runs = game.save.runs.slice(0, 5);
+  game.save.best = Math.max(game.save.best, run.score);
+  run.best = game.save.best;
+  persistSave(game.save);
+  game.audio.victory();
+  game.screen = 'victory';
+}
+
+function offerSeals() {
+  const pool = SEALS.filter((s) => !game.seals.has(s.id));
+  const options = [];
+  const bag = [...pool];
+  while (options.length < 3 && bag.length > 0) {
+    const pick = Math.floor(Math.random() * bag.length);
+    options.push(bag.splice(pick, 1)[0]);
   }
-  victoryInfo = {
-    totalScore,
-    totalStars: perRoom.reduce((sum, r) => sum + r.stars, 0),
-    totalTime: runTime,
-    best: bests.bestScore,
-    isNewBest,
-    perRoom,
-  };
-  screen = 'victory';
-  sfx.win();
+  game.sealChoice = options;
+  game.screen = 'seals';
 }
 
-function hitButton(click) {
-  if (!click) return null;
-  for (const b of buttons) {
-    if (click.x >= b.x && click.x <= b.x + b.w && click.y >= b.y && click.y <= b.y + b.h) return b.id;
+function pickSeal(index) {
+  const seal = game.sealChoice[index];
+  if (!seal) return;
+  game.seals.add(seal.id);
+  game.run.sealsTaken += 1;
+  game.audio.seal();
+  startRoom(game.world.levelIndex + 1);
+}
+
+function nextFromClear() {
+  const i = game.world.levelIndex;
+  if (i === 8) { finishRun(); return; }
+  if (i === 2 || i === 5) { offerSeals(); return; }
+  game.run.score += 0;
+  startRoom(i + 1);
+}
+
+function toggleMute() {
+  game.save.muted = !game.save.muted;
+  game.audio.setMuted(game.save.muted);
+  persistSave(game.save);
+}
+
+function readStepInput(firstStep) {
+  const input = game.input;
+  return {
+    axis: input.axis(),
+    jumpHeld: input.isDown('jump'),
+    jumpPressed: firstStep && input.wasPressed('jump'),
+    stealPressed: firstStep && (input.wasPressed('steal') || input.mouse.leftPressed),
+    givePressed: firstStep && (input.wasPressed('give') || input.mouse.rightPressed),
+  };
+}
+
+function playSound(event) {
+  const audio = game.audio;
+  switch (event.type) {
+    case 'steal': audio.steal(); break;
+    case 'give': audio.give(); break;
+    case 'pop': audio.pop(); break;
+    case 'disarm': audio.disarm(); break;
+    case 'smash': audio.smash(); break;
+    case 'explosion': audio.explosion(); break;
+    case 'orb': audio.orb(); break;
+    case 'jump': audio.jump(); break;
+    case 'land': audio.land(); break;
+    case 'hardLand': audio.hardLand(); break;
+    case 'hurt': audio.hurt(); break;
+    case 'fail': audio.fail(); break;
+    case 'gate': audio.gate(); break;
+    case 'switch': audio.tick(); break;
+    case 'doorOpen': audio.seal(); break;
+    case 'beep': audio.beep(); break;
+    case 'skin': audio.seal(); break;
+    default: break;
+  }
+}
+
+function drainEvents() {
+  const world = game.world;
+  for (const event of world.events) {
+    handleEvent(game.juice, event, world);
+    playSound(event);
+  }
+  world.events.length = 0;
+}
+
+function hitButton(x, y) {
+  for (const b of game.buttons) {
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b.id;
   }
   return null;
 }
 
-function frame(now) {
-  requestAnimationFrame(frame);
-  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
-  last = now;
-  time += dt;
-  const actions = input.takeActions();
-  const click = input.takeClick();
-  const digit = input.takeDigit();
-  const mouse = input.pointer();
-  if (actions || click) sfx.unlock();
-  if (actions & ACT_MUTE) sfx.toggleMute();
-
-  if (screen === 'title') {
-    if (digit >= 0 && digit < bests.unlocked) {
-      selected = digit;
-      sfx.click();
-    }
-    if (actions & ACT_CONFIRM) {
-      sfx.click();
-      startRun(selected);
-    }
-    const pressed = hitButton(click);
-    if (pressed === 'start') {
-      sfx.click();
-      startRun(selected);
-    } else if (pressed === 'help') {
-      showHelp = !showHelp;
-      sfx.click();
-    } else if (pressed === 'mute') {
-      sfx.toggleMute();
-    } else if (pressed && pressed.startsWith('room-')) {
-      selected = Number(pressed.slice(5));
-      sfx.click();
-    }
-    juice.update(dt);
-  } else if (screen === 'playing') {
-    if (actions & ACT_PAUSE) {
-      screen = 'paused';
-    } else if (actions & ACT_RETRY) {
-      startRoom(world.state.roomIndex);
-    } else if (juice.hitStopLeft() > 0) {
-      juice.tickHitStop(dt);
-    } else {
-      accumulator += dt;
-      let first = true;
-      while (accumulator >= STEP) {
-        world.step(STEP, input.direction(), input.jumpHeld(), first ? actions : 0);
-        first = false;
-        handleEvents(world, juice);
-        accumulator -= STEP;
-        if (world.state.cleared || world.state.failed) {
-          accumulator = 0;
-          break;
-        }
-      }
-      juice.update(dt);
-      if (world.state.cleared) onClear();
-      else if (world.state.failed) screen = 'failed';
-    }
-  } else if (screen === 'paused') {
-    if (actions & ACT_PAUSE) screen = 'playing';
-    else if (actions & ACT_RETRY) startRoom(world.state.roomIndex);
-    const pressed = hitButton(click);
-    if (pressed === 'resume') screen = 'playing';
-    else if (pressed === 'retry') startRoom(world.state.roomIndex);
-    else if (pressed === 'title') screen = 'title';
-  } else if (screen === 'clear') {
-    clearT += dt;
-    for (let k = starSfxFired; k < clearInfo.stars; k += 1) {
-      if (clearT > 0.35 + k * 0.3) {
-        sfx.star();
-        starSfxFired = k + 1;
-      }
-    }
-    const advance =
-      (actions & (ACT_CONFIRM | ACT_JUMP) && clearT > 0.4) || hitButton(click) === 'next';
-    if (advance) {
-      sfx.click();
-      if (clearInfo.isLast) onVictory();
-      else startRoom(clearInfo.room.index + 1);
-    } else {
-      const pressed = hitButton(click);
-      if (pressed === 'replay') startRoom(clearInfo.room.index);
-      else if (pressed === 'title') screen = 'title';
-    }
-  } else if (screen === 'failed') {
-    if (actions & (ACT_RETRY | ACT_CONFIRM | ACT_JUMP)) {
-      startRoom(world.state.roomIndex);
-    } else {
-      const pressed = hitButton(click);
-      if (pressed === 'retry') startRoom(world.state.roomIndex);
-      else if (pressed === 'title') screen = 'title';
-    }
-  } else if (screen === 'victory') {
-    if (actions & ACT_CONFIRM) startRun(0);
-    const pressed = hitButton(click);
-    if (pressed === 'again') startRun(0);
-    else if (pressed === 'title') screen = 'title';
-  }
-
-  render(mouse);
+function handleClick(x, y) {
+  const id = hitButton(x, y);
+  if (!id) return;
+  game.audio.unlock();
+  game.audio.ui();
+  if (id === 'start') startRun(0);
+  else if (id.startsWith('room:')) startRun(Number(id.slice(5)));
+  else if (id === 'howto') game.screen = 'howto';
+  else if (id === 'back') game.screen = 'title';
+  else if (id === 'mute') toggleMute();
+  else if (id === 'resume') game.screen = 'playing';
+  else if (id === 'restart') startRoom(game.world.levelIndex);
+  else if (id === 'title') { game.screen = 'title'; game.clearPending = 0; game.failPending = 0; }
+  else if (id === 'next') nextFromClear();
+  else if (id === 'replay') startRoom(game.world.levelIndex);
+  else if (id.startsWith('seal:')) pickSeal(Number(id.slice(5)));
+  else if (id === 'again') startRun(0);
+  else if (id === 'retry') startRoom(game.world.levelIndex);
 }
 
-function render(mouse) {
+function updateScreen(dt) {
+  const input = game.input;
+  if (input.mouse.leftPressed) handleClick(input.mouse.x, input.mouse.y);
+  if (input.wasPressed('mute')) toggleMute();
+
+  switch (game.screen) {
+    case 'title':
+      if (input.wasPressed('confirm')) startRun(0);
+      break;
+    case 'howto':
+      if (input.wasPressed('confirm') || input.wasPressed('pause')) game.screen = 'title';
+      break;
+    case 'playing':
+      if (input.wasPressed('pause')) { game.screen = 'paused'; break; }
+      if (input.wasPressed('retry')) startRoom(game.world.levelIndex);
+      break;
+    case 'paused':
+      if (input.wasPressed('pause') || input.wasPressed('confirm')) game.screen = 'playing';
+      else if (input.wasPressed('retry')) startRoom(game.world.levelIndex);
+      break;
+    case 'clear':
+      game.clearT += dt;
+      if (input.wasPressed('confirm')) nextFromClear();
+      else if (input.wasPressed('retry')) startRoom(game.world.levelIndex);
+      break;
+    case 'seals':
+      if (input.wasPressed('one')) pickSeal(0);
+      else if (input.wasPressed('two')) pickSeal(1);
+      else if (input.wasPressed('three')) pickSeal(2);
+      break;
+    case 'victory':
+      if (input.wasPressed('confirm')) startRun(0);
+      break;
+    case 'failed':
+      if (input.wasPressed('confirm') || input.wasPressed('retry')) startRoom(game.world.levelIndex);
+      break;
+    default:
+      break;
+  }
+}
+
+function drawWorldLayer(t, hideTag) {
+  game.world.player.hideTag = hideTag;
   ctx.save();
-  ctx.clearRect(0, 0, FIELD.width, FIELD.height);
-  if (screen === 'title') {
-    buttons = drawTitle(ctx, {
-      time,
-      juice,
-      best: bests.bestScore,
-      totalStars: bests.stars.reduce((sum, s) => sum + s, 0),
-      unlocked: bests.unlocked,
-      selected,
-      showHelp,
-      muted: sfx.isMuted(),
-      mouse,
-    }).buttons;
-    ctx.restore();
+  ctx.translate(Math.round(game.juice.shakeX), Math.round(game.juice.shakeY));
+  drawWorld(ctx, game.world, game.juice, t);
+  drawJuiceWorld(ctx, game.juice);
+  drawVignette(ctx);
+  ctx.restore();
+}
+
+function render(t) {
+  ctx.clearRect(0, 0, VIEW.w, VIEW.h);
+  switch (game.screen) {
+    case 'title':
+      game.buttons = drawTitle(ctx, game, t);
+      break;
+    case 'howto':
+      drawTitleDiorama(ctx, game, t);
+      game.buttons = drawHowto(ctx, game);
+      break;
+    case 'playing':
+      drawWorldLayer(t, false);
+      drawHud(ctx, game.world, game.run, t);
+      game.buttons = [];
+      break;
+    case 'paused':
+      drawWorldLayer(t, false);
+      drawHud(ctx, game.world, game.run, t);
+      game.buttons = drawPause(ctx, game);
+      break;
+    case 'clear':
+      drawWorldLayer(t, true);
+      game.buttons = drawClear(ctx, game, game.clearT);
+      break;
+    case 'seals':
+      drawWorldLayer(t, true);
+      game.buttons = drawSeals(ctx, game);
+      break;
+    case 'victory':
+      drawWorldLayer(t, true);
+      game.buttons = drawVictory(ctx, game);
+      break;
+    case 'failed':
+      drawWorldLayer(t, true);
+      game.buttons = drawFailed(ctx, game);
+      break;
+    default:
+      game.buttons = [];
+      break;
+  }
+}
+
+function tickDiorama(dt) {
+  stepJuice(game.dioramaJuice, dt);
+  game.dioramaBeamTimer -= dt;
+  if (game.dioramaBeamTimer <= 0) {
+    game.dioramaBeamTimer = 0.4;
+    game.dioramaJuice.beams.push({
+      x1: 398, y1: 512, x2: 465, y2: 309,
+      life: 0.3, maxLife: 0.3, kind: 'steal',
+    });
+  }
+  game.diorama.time += dt;
+}
+
+let last = performance.now();
+let acc = 0;
+
+function frame(now) {
+  const realDt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+
+  if (game.frozen) {
+    render(game.frozenTime);
+    if (!window.__shotReady) window.__shotReady = true;
+    requestAnimationFrame(frame);
     return;
   }
-  // Shake moves the camera (the world), never the HUD: the score, hearts and
-  // gauge stay readable while the vault shudders.
-  const offset = screen === 'playing' ? juice.shakeOffset() : { x: 0, y: 0 };
-  ctx.save();
-  ctx.translate(offset.x, offset.y);
-  drawWorld(ctx, world, juice, time, world.targets());
-  ctx.restore();
-  drawHud(ctx, {
-    world,
-    totalScore: totalScore + world.state.score,
-    stars: bests.stars,
-    roomCount: ROOMS.length,
-    best: bests.bestScore,
-    muted: sfx.isMuted(),
-    time,
-  });
-  ctx.restore();
-  if (screen === 'paused') buttons = drawPause(ctx, { mouse }).buttons;
-  else if (screen === 'clear') buttons = drawClear(ctx, { ...clearInfo, t: clearT, mouse }).buttons;
-  else if (screen === 'failed') buttons = drawFailed(ctx, { mouse, cause: world.state.failCause }).buttons;
-  else if (screen === 'victory') buttons = drawVictory(ctx, { ...victoryInfo, mouse }).buttons;
-  else buttons = [];
-}
 
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden && screen === 'playing') screen = 'paused';
-});
+  game.time += realDt;
+  updateScreen(realDt);
 
-// Screenshot staging: one deterministic frame, then signal the capture script.
-const params = new URLSearchParams(location.search);
-const shotKind = params.get('shot');
-if (shotKind) {
-  const seed = Number(params.get('seed') || 1);
-  const staged = runShot(shotKind, seed, handleEvents);
-  if (staged) {
-    ctx.clearRect(0, 0, FIELD.width, FIELD.height);
-    if (staged.kind === 'title') {
-      drawTitle(ctx, {
-        time: staged.time,
-        juice: createJuice(),
-        best: 24800,
-        totalStars: 14,
-        unlocked: 5,
-        selected: 0,
-        showHelp: false,
-        muted: false,
-        mouse: null,
-      });
-    } else if (staged.kind === 'win') {
-      drawWorld(ctx, staged.world, staged.juice, staged.time, { steal: null, give: null });
-      drawVictory(ctx, { ...staged.victory, mouse: null });
+  if (game.screen === 'playing' && game.clearPending <= 0 && game.failPending <= 0) {
+    if (game.juice.hitStop > 0) {
+      stepJuice(game.juice, realDt * 0.15);
     } else {
-      drawWorld(ctx, staged.world, staged.juice, staged.time, staged.world.targets());
-      drawHud(ctx, {
-        world: staged.world,
-        totalScore: staged.hud.totalScore,
-        stars: staged.hud.stars,
-        roomCount: ROOMS.length,
-        best: staged.hud.best,
-        muted: false,
-        time: staged.time,
-      });
+      acc += realDt;
+      let steps = 0;
+      let first = true;
+      while (acc >= STEP && steps < 4) {
+        stepWorld(game.world, readStepInput(first), STEP);
+        drainEvents();
+        acc -= STEP;
+        steps += 1;
+        first = false;
+        if (game.world.cleared || game.world.failed) { acc = 0; break; }
+      }
+      if (steps === 4) acc = 0;
+      stepJuice(game.juice, realDt);
     }
+    if (game.world.cleared && game.clearPending <= 0) {
+      game.clearPending = 0.6;
+      game.audio.clear();
+    }
+    if (game.world.failed && game.failPending <= 0) {
+      game.failPending = 0.8;
+    }
+  } else {
+    stepJuice(game.juice, realDt);
   }
-  window.__shotReady = true;
-} else {
+
+  if (game.clearPending > 0) {
+    game.clearPending -= realDt;
+    if (game.clearPending <= 0) showClear();
+  }
+  if (game.failPending > 0) {
+    game.failPending -= realDt;
+    if (game.failPending <= 0) showFailed();
+  }
+
+  if (game.screen === 'title' || game.screen === 'howto') tickDiorama(realDt);
+
+  render(game.time);
+  if (!window.__shotReady) window.__shotReady = true;
+  game.input.endFrame();
   requestAnimationFrame(frame);
 }
 
-// A hook for playtesting: state snapshots, scripted input, and room starts.
+// Audio unlocks on the first gesture, wherever it lands.
+window.addEventListener('keydown', () => game.audio.unlock(), { once: false });
+window.addEventListener('mousedown', () => game.audio.unlock(), { once: false });
+
+// Debug hook for scripted playtests: read-only state, plus room starts.
 window.__ballast = {
-  screen: () => screen,
-  snapshot: () => (world ? world.snapshot() : null),
-  start: (index) => startRun(index),
-  state: () => (world ? world.state : null),
-  input,
-  bests: () => bests,
+  version: 'v5',
+  screen() { return game.screen; },
+  state() {
+    const w = game.world;
+    return {
+      screen: game.screen,
+      room: w.levelIndex,
+      x: w.player.x, y: w.player.y,
+      vx: w.player.vx, vy: w.player.vy,
+      gauge: w.player.gauge, hearts: w.player.hearts,
+      onGround: w.player.onGround,
+      cleared: w.cleared, failed: w.failed, failCause: w.failCause,
+      doorOpen: w.doorOpen,
+      roomScore: w.roomScore, combo: w.combo,
+      roomTime: w.roomTime,
+      orbs: w.orbs.map((o) => o.taken),
+      golemsAlive: w.golems.map((g) => g.alive),
+      golemX: w.golems.map((g) => g.x),
+      minesArmed: w.mines.map((m) => m.armed),
+      switchesLatched: w.switches.map((s) => s.latched),
+      crackedBroken: w.cracked.map((c) => c.broken),
+      crates: w.crates.map((c) => ({ x: c.x, y: c.y, weight: c.weight })),
+      boulders: w.boulders.map((b) => ({ x: b.x, y: b.y, weight: b.weight })),
+      seals: [...game.seals],
+      runScore: game.run.score,
+      stealTarget: w.stealTarget ? w.stealTarget.kind : null,
+      giveTarget: w.giveTarget ? w.giveTarget.kind : null,
+    };
+  },
+  startRoom(index) { startRun(index); },
 };
+
+requestAnimationFrame(frame);

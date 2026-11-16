@@ -1,12 +1,20 @@
-// Static server for local play: serves game/ at http://localhost:8080/ and opens
-// nothing itself. Run with `node serve.ts`, then open the address in a browser.
+// A tiny static server for game/ (Node 22, standard library only): run
+// `node serve.ts` and open http://localhost:8080 to play BALLAST locally.
+// It serves only files under game/, sends the MIME types a browser game
+// needs, and refuses any path that climbs out. A development convenience,
+// not a web server for the internet.
+import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = join(fileURLToPath(new URL('.', import.meta.url)), 'game');
-const types = {
+const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
+const args = process.argv.slice(2);
+const portIndex = args.indexOf('--port');
+const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
+const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -14,24 +22,37 @@ const types = {
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
 };
 
-createServer(async (request, response) => {
+createServer((req, res) => {
   try {
-    const url = new URL(request.url ?? '/', 'http://localhost');
-    let path = normalize(join(root, decodeURIComponent(url.pathname)));
-    if (!path.startsWith(root)) {
-      response.writeHead(403);
-      response.end();
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    let pathname = decodeURIComponent(url.pathname);
+    if (pathname.endsWith('/')) pathname += 'index.html';
+    const file = resolve(join(root, normalize(pathname)));
+    if (file !== root && !file.startsWith(root + sep)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('forbidden');
       return;
     }
-    if (url.pathname.endsWith('/')) path = join(path, 'index.html');
-    const body = await readFile(path);
-    response.writeHead(200, { 'content-type': types[extname(path)] ?? 'application/octet-stream' });
-    response.end(body);
+    const stat = statSync(file);
+    if (!stat.isFile()) throw new Error('not a file');
+    res.writeHead(200, {
+      'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+      'content-length': stat.size,
+      'cache-control': 'no-cache',
+    });
+    createReadStream(file).pipe(res);
   } catch {
-    response.writeHead(404);
-    response.end('not found');
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found');
   }
-}).listen(8080, () => console.log('BALLAST at http://localhost:8080/'));
+}).listen(port, () => {
+  console.log(`BALLAST at http://localhost:${port}/`);
+});
